@@ -4510,12 +4510,17 @@ class NoticeCard extends StatelessWidget {
                           Text(n.body, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 13, height: 1.3)),
                         ]),
                       ),
-                      IconButton(
-                        tooltip: 'Dismiss',
-                        visualDensity: VisualDensity.compact,
-                        iconSize: 18,
-                        onPressed: () => dismissNotice(n.id),
-                        icon: const Icon(Icons.close, color: kMuted),
+                      // No tooltip here: the banner layer sits above the Navigator, so there is no Overlay
+                      // ancestor and a Tooltip would throw.
+                      Semantics(
+                        button: true,
+                        label: 'Dismiss',
+                        child: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 18,
+                          onPressed: () => dismissNotice(n.id),
+                          icon: const Icon(Icons.close, color: kMuted),
+                        ),
                       ),
                     ]),
                   ),
