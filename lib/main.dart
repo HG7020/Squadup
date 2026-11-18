@@ -454,7 +454,7 @@ class AppState extends ChangeNotifier {
         c.msgs.add(Msg('Yo, are you around tonight? 🎮', false));
         c.unread++;
         notifyListeners();
-        toast('New message from ${c.p.tag}');
+        pushNotice('Messages', Icons.chat_bubble, c.p.tag, 'Yo, are you around tonight? 🎮', chat: c);
         return;
       }
     }
@@ -579,7 +579,7 @@ class AppState extends ChangeNotifier {
         if (!identical(c, activeChat) && !c.muted) c.unread++;
       }
       notifyListeners();
-      toast('${p.tag} accepted your invite!');
+      pushNotice('Friend requests', Icons.how_to_reg, 'Squad request accepted', '${p.tag} accepted your invite. Say hi!', chat: chatWith(p));
     });
   }
 
@@ -587,8 +587,12 @@ class AppState extends ChangeNotifier {
     c.msgs.add(Msg(text, true));
     notifyListeners();
     Timer(const Duration(milliseconds: 1200), () {
-      c.msgs.add(Msg(_replies[c.msgs.length % _replies.length], false));
-      if (!identical(c, activeChat) && !c.muted) c.unread++;
+      final reply = _replies[c.msgs.length % _replies.length];
+      c.msgs.add(Msg(reply, false));
+      if (!identical(c, activeChat) && !c.muted) {
+        c.unread++;
+        pushNotice('Messages', Icons.chat_bubble, c.p.tag, reply, chat: c);
+      }
       notifyListeners();
     });
   }
@@ -1041,6 +1045,7 @@ class SquadUpApp extends StatelessWidget {
           title: 'SquadUp',
           debugShowCheckedModeBanner: false,
           scaffoldMessengerKey: messengerKey,
+          navigatorKey: navKey,
           scrollBehavior: const MaterialScrollBehavior().copyWith(
             dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse, PointerDeviceKind.trackpad},
           ),
@@ -1050,7 +1055,7 @@ class SquadUpApp extends StatelessWidget {
           home: const WelcomeScreen(),
           builder: (context, child) => ValueListenableBuilder<double>(
             valueListenable: textScale,
-            builder: (_, v, __) => MediaQuery(data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(v)), child: child!),
+            builder: (_, v, __) => MediaQuery(data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(v)), child: Stack(fit: StackFit.expand, children: [child!, const NoticeLayer()])),
           ),
         ),
       );
@@ -3443,6 +3448,15 @@ List<Widget> settingsMore(BuildContext context, Profile profile) {
               S.update();
             },
           ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: () => pushNotice('Messages', Icons.notifications_active, 'Test notification', 'This is how notifications look. Tap to open the Dashboard.', tab: 0),
+            icon: const Icon(Icons.notifications_active_outlined),
+            label: const Text('Send a test notification'),
+          ),
+        ),
       ]),
     ),
     Sec(
@@ -4170,6 +4184,184 @@ Widget friendsStrip(BuildContext context, List<Player> friends) => Column(crossA
     ]);
 
 
+// ───────────────────────── In-app notification banners ─────────────────────────
+final navKey = GlobalKey<NavigatorState>();
+
+class AppNotice {
+  final String id, title, body;
+  final IconData icon;
+  final Color color;
+  final int? tab; // main tab to open when tapped
+  final Chat? chat; // chat to open when tapped
+  AppNotice(this.id, this.icon, this.color, this.title, this.body, {this.tab, this.chat});
+}
+
+final notices = ValueNotifier<List<AppNotice>>([]);
+const kNoticeSeconds = 5;
+
+/// Shows a banner in the top corner for a few seconds. [category] must match a key in Profile.notif
+/// so the user's notification settings are respected.
+void pushNotice(String category, IconData icon, String title, String body, {Color color = kAccent, int? tab, Chat? chat}) {
+  final u = S.me;
+  if (u != null && u.notif[category] == false) return;
+  final n = AppNotice('${DateTime.now().microsecondsSinceEpoch}', icon, color, title, body, tab: tab, chat: chat);
+  notices.value = [n, ...notices.value].take(3).toList();
+  Timer(const Duration(seconds: kNoticeSeconds), () => dismissNotice(n.id));
+}
+
+void dismissNotice(String id) {
+  if (notices.value.any((n) => n.id == id)) notices.value = notices.value.where((n) => n.id != id).toList();
+}
+
+void _openNotice(AppNotice n) {
+  dismissNotice(n.id);
+  final nav = navKey.currentState;
+  final ctx = navKey.currentContext;
+  if (nav == null || ctx == null) return;
+  if (n.chat != null && S.chats.contains(n.chat)) {
+    nav.popUntil((r) => r.isFirst);
+    openChat(ctx, n.chat!);
+  } else if (n.tab != null) {
+    nav.popUntil((r) => r.isFirst);
+    goTab(n.tab!);
+  }
+}
+
+class NoticeLayer extends StatelessWidget {
+  const NoticeLayer({super.key});
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<List<AppNotice>>(
+        valueListenable: notices,
+        builder: (context, list, _) {
+          if (list.isEmpty) return const SizedBox.shrink();
+          final narrow = MediaQuery.of(context).size.width < 520;
+          return SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: narrow ? double.infinity : 380),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [for (final n in list) NoticeCard(n, key: ValueKey(n.id))]),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+}
+
+class NoticeCard extends StatelessWidget {
+  final AppNotice n;
+  const NoticeCard(this.n, {super.key});
+  @override
+  Widget build(BuildContext context) => Dismissible(
+        key: ValueKey('d${n.id}'),
+        direction: DismissDirection.horizontal,
+        onDismissed: (_) => dismissNotice(n.id),
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
+          builder: (context, v, child) => Opacity(opacity: v, child: Transform.translate(offset: Offset(0, -24 * (1 - v)), child: child)),
+          child: Semantics(
+            liveRegion: true,
+            label: '${n.title}. ${n.body}',
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: kCard,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: n.color.withAlpha(90)),
+                boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 24, offset: Offset(0, 8))],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Material(
+                type: MaterialType.transparency,
+                child: InkWell(
+                onTap: () => _openNotice(n),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 6, 12),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(color: n.color.withAlpha(45), shape: BoxShape.circle),
+                        child: Icon(n.icon, color: n.color, size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            Expanded(child: Text(n.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5))),
+                            const Text('now', style: TextStyle(color: kMuted, fontSize: 11.5)),
+                          ]),
+                          const SizedBox(height: 2),
+                          Text(n.body, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 13, height: 1.3)),
+                        ]),
+                      ),
+                      IconButton(
+                        tooltip: 'Dismiss',
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        onPressed: () => dismissNotice(n.id),
+                        icon: const Icon(Icons.close, color: kMuted),
+                      ),
+                    ]),
+                  ),
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 1, end: 0),
+                    duration: const Duration(seconds: kNoticeSeconds),
+                    builder: (context, v, _) => LinearProgressIndicator(value: v, minHeight: 3, color: n.color, backgroundColor: Colors.transparent),
+                  ),
+                ]),
+              )),
+            ),
+          ),
+        ),
+      );
+}
+
+extension NoticeDemos on AppState {
+  void simulateFriendRequest() {
+    for (final p in kPlayers) {
+      if (!friends.contains(p.tag) && !incomingFriendReqs.contains(p) && !invited.contains(p.tag) && !blocked.contains(p.tag)) {
+        incomingFriendReqs.add(p);
+        touch();
+        pushNotice('Friend requests', Icons.person_add_alt, 'New friend request', '${p.tag} wants to join your squad.', tab: 0);
+        return;
+      }
+    }
+  }
+
+  void simulateGroupRequest() {
+    final gs = manageableGroups;
+    if (gs.isEmpty) return;
+    final g = gs.first;
+    for (final p in kPlayers) {
+      if (!g.requests.contains(p) && !friends.contains(p.tag) && !incomingFriendReqs.contains(p)) {
+        g.requests.add(p);
+        touch();
+        pushNotice('Group activity', Icons.groups, 'New join request', '${p.tag} wants to join ${g.name}.', color: Colors.amber, tab: 0);
+        return;
+      }
+    }
+  }
+
+  void simulateNews() {
+    final u = me;
+    if (u == null) return;
+    for (final n in kNews) {
+      if (n.games.any(u.followed.contains)) {
+        pushNotice('News & releases', Icons.newspaper, 'News about ${n.games.firstWhere(u.followed.contains)}', n.title, color: Colors.lightBlueAccent, tab: 5);
+        return;
+      }
+    }
+  }
+}
+
+
 // ───────────────────────── Home shell ─────────────────────────
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -4179,6 +4371,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   Timer? _ping;
+  final _extra = <Timer>[];
   static const dests = [
     (Icons.dashboard_outlined, Icons.dashboard, 'Dashboard'),
     (Icons.search, Icons.search, 'Find Team'),
@@ -4202,11 +4395,18 @@ class _HomeShellState extends State<HomeShell> {
     navIndex.value = 2; // the app opens on Games
     navIndex.addListener(_onNav);
     _ping = Timer(const Duration(seconds: 25), S.simulatePing);
+    _extra
+      ..add(Timer(const Duration(seconds: 50), S.simulateFriendRequest))
+      ..add(Timer(const Duration(seconds: 75), S.simulateGroupRequest))
+      ..add(Timer(const Duration(seconds: 100), S.simulateNews));
   }
 
   @override
   void dispose() {
     _ping?.cancel();
+    for (final t in _extra) {
+      t.cancel();
+    }
     navIndex.removeListener(_onNav);
     super.dispose();
   }
