@@ -2554,7 +2554,7 @@ const kFaq = <(String, String)>[
   ('How does SquadUp match me with players?', 'We compare shared games, how often you play each one, age range, region and availability to give each player a match score.'),
   ('Are game stats real?', 'In this version stats are sample data to show how profiles will look. Real stats need official game or platform APIs and your permission.'),
   ('Who can see my stats?', 'You decide in Settings → Privacy (Public, Friends Only or Private). You can also hide stats for individual games.'),
-  ('How do I join a private group?', 'Open the group and send a request. The owner or an admin approves it. You can see pending requests on your Home page.'),
+  ('How do I join a private group?', 'Open the group and send a request. The owner or an admin approves it. You can see pending requests on your Dashboard.'),
   ('How do I block or report someone?', 'Open their profile or chat and tap the menu (⋮). Choose Report or Block. Blocked players disappear from your search, chat and invites.'),
   ('How do I delete my account?', 'Settings → Account → Delete account. You can also download a copy of your data first.'),
   ('Why do some stores show affiliate links?', 'Some links are affiliate links. We may earn a small commission if you buy, at no extra cost to you. You can hide store links in Settings.'),
@@ -3550,10 +3550,10 @@ List<FeedbackReport> _seedReports() => [
       FeedbackReport('SU-1001', 'Bug', 'Medium', 'Sample: group chat scrolls to the top after I send a message.', 'Open a group → Chat → send two messages.', 'Groups', 'android', 'NovaStrike',
           status: 'In review', t: DateTime.now().subtract(const Duration(days: 2))),
       FeedbackReport('SU-1002', 'Feature idea', 'n/a', 'Sample: add a dark-green theme option.', '', 'Settings', 'web', 'PixelPaladin', t: DateTime.now().subtract(const Duration(days: 1))),
-      FeedbackReport('SU-1003', 'Account issue', 'High', "Sample: I didn't get my verification email.", 'Sign up → wait for the email.', 'Home', 'ios', 'KageRonin', t: DateTime.now().subtract(const Duration(hours: 5))),
+      FeedbackReport('SU-1003', 'Account issue', 'High', "Sample: I didn't get my verification email.", 'Sign up → wait for the email.', 'Dashboard', 'ios', 'KageRonin', t: DateTime.now().subtract(const Duration(hours: 5))),
     ];
 
-String currentScreenName() => const ['Home', 'Find Team', 'Games', 'Chats', 'Groups', 'News', 'Settings'][navIndex.value.clamp(0, 6).toInt()];
+String currentScreenName() => const ['Dashboard', 'Find Team', 'Games', 'Chats', 'Groups', 'News', 'Settings'][navIndex.value.clamp(0, 6).toInt()];
 String platformName() => kIsWeb ? 'web' : defaultTargetPlatform.name;
 
 extension FeedbackActions on AppState {
@@ -3587,15 +3587,15 @@ const _kb = <(List<String>, String, List<(String, int)>)>[
   (['delete account', 'delete my', 'remove my account', 'close my account'], 'Settings → Account → Delete account. You can use Settings → Your data → Download my data first if you want a copy.', [('Open Settings', 6)]),
   (['password', 'forgot', 'reset', "can't log", 'cant log', 'locked out', 'login'], 'To change your password go to Settings → Account → Change password. If you cannot log in, tap "Forgot password" on the login screen. If that does not work, I can send a report to the team.', [('Open Settings', 6)]),
   (['verify', 'verification', 'email code', 'confirm email'], 'Settings → Your data → Verify your email. In this demo the code is 123456 because no real email is sent. If a real code does not arrive, check spam, then tell me and I will send a report.', [('Open Settings', 6)]),
-  (['group', 'clan', 'guild', 'private group', 'join request'], 'Browse and search groups in the Groups tab. Public groups join instantly. For private groups you send a request that the owner approves; pending requests show on your Home page. Owners can manage members, announcements and what outsiders can see.', [('Open Groups', 4)]),
+  (['group', 'clan', 'guild', 'private group', 'join request'], 'Browse and search groups in the Groups tab. Public groups join instantly. For private groups you send a request that the owner approves; pending requests show on your Dashboard. Owners can manage members, announcements and what outsiders can see.', [('Open Groups', 4)]),
   (['unread', 'mute', 'message', 'chat'], 'Open the Chats tab to see your conversations. The badge shows unread messages. In a chat tap ⋮ to mute, report or block. Muted chats do not add to your unread count.', [('Open Chats', 3)]),
-  (['friend', 'squad mate', 'invite', 'request'], 'Send an invite from a player\'s card or profile. Pending requests, and requests sent to you, are on your Home page where you can accept, decline or cancel.', [('Open Home', 0)]),
+  (['friend', 'squad mate', 'invite', 'request'], 'Send an invite from a player\'s card or profile. Pending requests, and requests sent to you, are on your Dashboard where you can accept, decline or cancel.', [('Open Dashboard', 0)]),
   (['news', 'headline'], 'The News tab has sample gaming stories you can filter by game type, by game, or by games you play and follow. In this version the stories are demo content, not live headlines.', [('Open News', 5)]),
   (['buy', 'purchase', 'store', 'affiliate', 'where to buy', 'pre-order', 'preorder'], 'Game pages have a Where to buy (or Pre-order) button that opens a store in your browser. Some links are affiliate links, so SquadUp may earn a small commission at no extra cost to you. You can hide store links in Settings → Display & shopping.', [('Open Games', 2)]),
   (['notification', 'bell', 'push', 'alert'], 'The bell icon at the top shows unread messages, friend requests and group requests. You can choose which notification types you get in Settings → Notification types.', [('Open Settings', 6)]),
   (['text size', 'font', 'accessib', 'dark mode', 'light mode', 'theme', 'too small'], 'Settings has a dark/light mode switch and a text-size slider under Display & shopping.', [('Open Settings', 6)]),
-  (['lfg', 'looking for group', 'need players', 'need teammates'], 'On Home, use Looking for group to post what you need (game, mode, players, optional voice link), or join someone else\'s post.', [('Open Home', 0)]),
-  (['event', 'rsvp', 'schedule'], 'Create an event from the Upcoming events card on Home, and tap RSVP to join one.', [('Open Home', 0)]),
+  (['lfg', 'looking for group', 'need players', 'need teammates'], 'On the Dashboard, use Looking for group to post what you need (game, mode, players, optional voice link), or join someone else\'s post.', [('Open Dashboard', 0)]),
+  (['event', 'rsvp', 'schedule'], 'Create an event from the Upcoming events card on the Dashboard, and tap RSVP to join one.', [('Open Dashboard', 0)]),
   (['photo', 'avatar', 'picture', 'upload'], 'Settings → Account → Profile picture lets you upload a photo or choose an avatar. You can also tap your avatar on your profile.', [('Open Settings', 6)]),
   (['cost', 'price', 'pay', 'free', 'subscription'], 'SquadUp is free to use. There are no subscriptions.', []),
 ];
@@ -4012,7 +4012,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   Timer? _ping;
   static const dests = [
-    (Icons.dashboard_outlined, Icons.dashboard, 'Home'),
+    (Icons.dashboard_outlined, Icons.dashboard, 'Dashboard'),
     (Icons.search, Icons.search, 'Find Team'),
     (Icons.sports_esports_outlined, Icons.sports_esports, 'Games'),
     (Icons.chat_bubble_outline, Icons.chat_bubble, 'Chats'),
@@ -4021,14 +4021,17 @@ class _HomeShellState extends State<HomeShell> {
     (Icons.settings_outlined, Icons.settings, 'Settings'),
   ];
   // Phone bottom bar shows these; everything else lives under "More".
-  static const barItems = [0, 1, 3, 4];
+  // Sidebar order (indexes into dests): Games first, then Dashboard.
+  static const order = [2, 0, 1, 3, 4, 5, 6];
+  // Phone bottom bar; the rest live under "More".
+  static const barItems = [2, 0, 1, 3];
 
   void _onNav() => setState(() {});
 
   @override
   void initState() {
     super.initState();
-    navIndex.value = 0;
+    navIndex.value = 2; // the app opens on Games
     navIndex.addListener(_onNav);
     _ping = Timer(const Duration(seconds: 25), S.simulatePing);
   }
@@ -4054,7 +4057,7 @@ class _HomeShellState extends State<HomeShell> {
         backgroundColor: kCard,
         builder: (c) => SafeArea(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            for (final idx in [2, 5, 6])
+            for (final idx in [4, 5, 6])
               ListTile(
                 leading: _icon(idx, navIndex.value == idx),
                 title: Text(dests[idx].$3),
@@ -4115,13 +4118,13 @@ class _HomeShellState extends State<HomeShell> {
                 body: wide
                     ? Row(children: [
                         NavigationRail(
-                          selectedIndex: i,
+                          selectedIndex: order.indexOf(i),
                           extended: extended,
-                          onDestinationSelected: goTab,
+                          onDestinationSelected: (v) => goTab(order[v]),
                           labelType: extended ? NavigationRailLabelType.none : NavigationRailLabelType.all,
                           backgroundColor: Theme.of(context).cardColor,
                           destinations: [
-                            for (var k = 0; k < dests.length; k++)
+                            for (final k in order)
                               NavigationRailDestination(icon: _icon(k, false), selectedIcon: _icon(k, true), label: Text(dests[k].$3)),
                           ],
                         ),
