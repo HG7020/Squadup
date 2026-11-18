@@ -10,12 +10,12 @@ import 'package:image_picker/image_picker.dart';
 void main() => runApp(const SquadUpApp());
 
 // ───────────────────────── Constants ─────────────────────────
-Color get kBg => squadTheme.value == ThemeMode.dark ? const Color(0xFF101719) : const Color(0xFFF4F8F7);
-Color get kCard => squadTheme.value == ThemeMode.dark ? const Color(0xFF1B2628) : Colors.white;
-Color get kField => squadTheme.value == ThemeMode.dark ? const Color(0xFF263437) : const Color(0xFFEAF1EF);
+Color get kBg => squadTheme.value == ThemeMode.dark ? const Color(0xFF0A0E1A) : const Color(0xFFEEF2F9);
+Color get kCard => squadTheme.value == ThemeMode.dark ? const Color(0xFF151B2E) : Colors.white;
+Color get kField => squadTheme.value == ThemeMode.dark ? const Color(0xFF1F2740) : const Color(0xFFE3E9F4);
 const Color kAccent = Color(0xFF00C853);
 const Color kTeal = Color(0xFF00897B);
-const Color kMuted = Color(0xFF7C8E90); // secondary text that reads on both dark and light
+const Color kMuted = Color(0xFF7F8AA3); // secondary text that reads on both dark and light
 const kBrandGradient = LinearGradient(colors: [kTeal, kAccent]);
 const kPlatforms = ['PlayStation', 'Xbox', 'Nintendo Switch', 'PC'];
 const kRanks = ['Beginner', 'Casual', 'Intermediate', 'Advanced', 'Elite'];
@@ -607,7 +607,7 @@ int ageOf(DateTime d) {
 String fmtDate(DateTime d) => '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 String fmtTime(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 Color statusColor(String s) => s == 'online' ? kAccent : (s == 'away' ? Colors.amber : Colors.grey);
-ButtonStyle bigBtn() => FilledButton.styleFrom(minimumSize: const Size.fromHeight(52));
+ButtonStyle bigBtn() => FilledButton.styleFrom(minimumSize: const Size.fromHeight(54), shape: const StadiumBorder());
 void goTo(BuildContext c, Widget w) => Navigator.pushAndRemoveUntil(c, MaterialPageRoute(builder: (_) => w), (r) => false);
 void openPlayer(BuildContext c, Player p) => Navigator.push(c, MaterialPageRoute(builder: (_) => PlayerProfileScreen(p)));
 void openGame(BuildContext c, String g) => Navigator.push(c, MaterialPageRoute(builder: (_) => GamePlayersScreen(g)));
@@ -836,7 +836,7 @@ class Sec extends StatelessWidget {
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: kCard, borderRadius: BorderRadius.circular(16)),
+          decoration: BoxDecoration(color: kCard, borderRadius: BorderRadius.circular(22)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(child: Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold))),
@@ -1058,21 +1058,28 @@ class SquadUpApp extends StatelessWidget {
 
 ThemeData _buildTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
-  final bg = dark ? const Color(0xFF101719) : const Color(0xFFF4F8F7);
-  final card = dark ? const Color(0xFF1B2628) : Colors.white;
-  final field = dark ? const Color(0xFF263437) : const Color(0xFFEAF1EF);
+  final bg = dark ? const Color(0xFF0A0E1A) : const Color(0xFFEEF2F9);
+  final card = dark ? const Color(0xFF151B2E) : Colors.white;
+  final field = dark ? const Color(0xFF1F2740) : const Color(0xFFE3E9F4);
+  const pill = StadiumBorder();
   return ThemeData(
     brightness: brightness,
     useMaterial3: true,
     scaffoldBackgroundColor: bg,
     colorScheme: ColorScheme.fromSeed(seedColor: kAccent, brightness: brightness, surface: card),
-    appBarTheme: AppBarTheme(backgroundColor: bg, elevation: 0),
+    appBarTheme: AppBarTheme(backgroundColor: bg, elevation: 0, scrolledUnderElevation: 0, surfaceTintColor: Colors.transparent),
     cardColor: card,
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: field,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
     ),
+    filledButtonTheme: FilledButtonThemeData(style: FilledButton.styleFrom(shape: pill, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14))),
+    outlinedButtonTheme: OutlinedButtonThemeData(style: OutlinedButton.styleFrom(shape: pill, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14))),
+    chipTheme: ChipThemeData(shape: pill, side: BorderSide.none, backgroundColor: field),
+    navigationBarTheme: NavigationBarThemeData(backgroundColor: card, surfaceTintColor: Colors.transparent, indicatorColor: kAccent.withAlpha(60), indicatorShape: pill, height: 70),
+    navigationRailTheme: NavigationRailThemeData(indicatorColor: kAccent.withAlpha(60), indicatorShape: pill),
+    bottomSheetTheme: const BottomSheetThemeData(shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26)))),
     snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
   );
 }
@@ -2362,7 +2369,8 @@ class HomeTab extends StatelessWidget {
               child: LayoutBuilder(builder: (context, box) {
                 final two = box.maxWidth >= 860;
                 return ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), children: [
-                  pageTitle('Welcome back, $name 👋'),
+                  dashHeader(context, me, name),
+                  friendsStrip(context, online),
                   IntrinsicHeight(
                     child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                       _stat(Icons.chat_bubble_outline, '${S.totalUnread}', 'Unread messages', () => goTab(3)),
@@ -4002,6 +4010,166 @@ class _TeamReviewState extends State<TeamReviewScreen> {
       );
 }
 
+// ───────────────────────── PlayStation-inspired layout pieces ─────────────────────────
+class GamePoster extends StatelessWidget {
+  final String game;
+  const GamePoster(this.game, {super.key});
+  @override
+  Widget build(BuildContext context) {
+    final soon = kUpcoming[game];
+    return SizedBox(
+      width: 156,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () => openGame(context, game),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: SizedBox(
+              height: 116,
+              width: 156,
+              child: Stack(fit: StackFit.expand, children: [
+                CoverImage(game, compact: true),
+                if (soon != null) const Positioned(top: 8, left: 8, child: GameBadge('SOON', Colors.amber)),
+                Positioned(top: 2, right: 2, child: FollowHeart(game)),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(game, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, height: 1.2)),
+          if (soon != null) Text(soon, style: const TextStyle(fontSize: 11.5, color: kMuted)),
+        ]),
+      ),
+    );
+  }
+}
+
+class GameRow extends StatelessWidget {
+  final String title;
+  final List<String> games;
+  const GameRow(this.title, this.games, {super.key});
+  @override
+  Widget build(BuildContext context) => games.isEmpty
+      ? const SizedBox()
+      : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(padding: const EdgeInsets.fromLTRB(16, 20, 16, 10), child: Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+          SizedBox(
+            height: 196,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: games.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) => GamePoster(games[i]),
+            ),
+          ),
+        ]);
+}
+
+class HeroBanner extends StatelessWidget {
+  final String game;
+  const HeroBanner(this.game, {super.key});
+  @override
+  Widget build(BuildContext context) {
+    final soon = kUpcoming[game];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(26),
+        child: SizedBox(
+          height: 230,
+          child: Stack(fit: StackFit.expand, children: [
+            CoverImage(game, compact: true),
+            const DecoratedBox(
+              decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Color(0xDD000000)])),
+            ),
+            Positioned(
+              left: 20,
+              right: 20,
+              bottom: 18,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(soon != null ? 'COMING $soon'.toUpperCase() : 'FEATURED', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1)),
+                const SizedBox(height: 4),
+                Text(game, style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800, height: 1.1)),
+                const SizedBox(height: 12),
+                Wrap(spacing: 10, runSpacing: 8, children: [
+                  FilledButton.icon(onPressed: () => openGame(context, game), icon: const Icon(Icons.people), label: const Text('Find teammates')),
+                  if (S.me?.showBuyLinks ?? true)
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white54)),
+                      onPressed: () => showBuySheet(context, game),
+                      icon: const Icon(Icons.shopping_bag_outlined),
+                      label: Text(soon != null ? 'Pre-order' : 'Where to buy'),
+                    ),
+                ]),
+              ]),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+Widget dashHeader(BuildContext context, Profile me, String name) => Padding(
+      padding: const EdgeInsets.fromLTRB(0, 16, 0, 18),
+      child: Row(children: [
+        InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => openMyProfile(context),
+          child: Container(
+            padding: const EdgeInsets.all(3),
+            decoration: const BoxDecoration(shape: BoxShape.circle, gradient: kBrandGradient),
+            child: meAvatar(radius: 32),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Welcome back, $name', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 2),
+            Text('@${me.username} · ${S.friends.length} squad mates · ${S.groupsOf(me).length} groups', style: const TextStyle(color: kMuted, fontSize: 13)),
+          ]),
+        ),
+      ]),
+    );
+
+Widget friendsStrip(BuildContext context, List<Player> friends) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Your squad', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+      SizedBox(
+        height: 118,
+        child: ListView(scrollDirection: Axis.horizontal, children: [
+          for (final p in friends)
+            InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => openChat(context, S.startChat(p)),
+              child: SizedBox(
+                width: 84,
+                child: Column(children: [
+                  Avatar(p.avatar, status: p.status, radius: 28),
+                  const SizedBox(height: 6),
+                  Text(p.tag, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+                ]),
+              ),
+            ),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => goTab(1),
+            child: SizedBox(
+              width: 84,
+              child: Column(children: [
+                CircleAvatar(radius: 28, backgroundColor: kField, child: const Icon(Icons.person_add_alt)),
+                const SizedBox(height: 6),
+                const Text('Add', style: TextStyle(fontSize: 11.5)),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 12),
+    ]);
+
+
 // ───────────────────────── Home shell ─────────────────────────
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -5026,6 +5194,13 @@ class GamesTab extends StatefulWidget {
 class _GamesTabState extends State<GamesTab> {
   final q = TextEditingController();
   String f = 'All';
+
+  @override
+  void dispose() {
+    q.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final qText = q.text.trim().toLowerCase();
@@ -5042,30 +5217,49 @@ class _GamesTabState extends State<GamesTab> {
           return true;
       }
     }).toList();
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          pageTitle('Games'),
-          searchField(q, (_) => setState(() {})),
-          const SizedBox(height: 10),
-          Wrap(spacing: 8, runSpacing: 4, children: [
-            for (final o in const ['All', 'Released', 'New', 'Upcoming'])
-              ChoiceChip(label: Text(o), selected: f == o, onSelected: (_) => setState(() => f = o)),
+    final browsing = qText.isEmpty && f == 'All';
+    final me = S.me;
+    final all = popularGames();
+    return ListenableBuilder(
+      listenable: S,
+      builder: (context, _) => ListView(padding: const EdgeInsets.only(bottom: 24), children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            pageTitle('Games'),
+            searchField(q, (_) => setState(() {})),
+            const SizedBox(height: 10),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final o in const ['All', 'Released', 'New', 'Upcoming'])
+                ChoiceChip(label: Text(o), selected: f == o, onSelected: (_) => setState(() => f = o)),
+            ]),
           ]),
-        ]),
-      ),
-      Expanded(
-        child: games.isEmpty
-            ? const Center(child: Text('No games match your search.', style: TextStyle(color: kMuted)))
-            : GridView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 220, mainAxisExtent: 192, crossAxisSpacing: 12, mainAxisSpacing: 12),
-                itemCount: games.length,
-                itemBuilder: (_, i) => GameCard(games[i]),
-              ),
-      ),
-    ]);
+        ),
+        if (browsing) ...[
+          HeroBanner(kUpcoming.isNotEmpty ? kUpcoming.keys.first : all.first),
+          GameRow('Popular now', all.where((g) => !kUpcoming.containsKey(g)).take(14).toList()),
+          GameRow('Coming soon', kUpcoming.keys.toList()),
+          GameRow('New', kNew.toList()),
+          if (me != null) GameRow('Your games', me.games.toList()),
+          if (me != null) GameRow('Games you follow', me.followed.toList()),
+        ],
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 22, 16, 10),
+          child: Text(browsing ? 'All games' : 'Results', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        ),
+        if (games.isEmpty)
+          const Padding(padding: EdgeInsets.all(32), child: Center(child: Text('No games match your search.', style: TextStyle(color: kMuted))))
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 220, mainAxisExtent: 192, crossAxisSpacing: 12, mainAxisSpacing: 12),
+            itemCount: games.length,
+            itemBuilder: (_, i) => GameCard(games[i]),
+          ),
+      ]),
+    );
   }
 }
 
