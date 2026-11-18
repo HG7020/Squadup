@@ -19,3 +19,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logos/squadup_logo_full.png
+    - assets/logos/squadup_logo_full_dark.png
+    - assets/logos/squadup_logo_icon.png
+    - assets/logos/squadup_logo_icon_dark.png
+    - assets/games/
