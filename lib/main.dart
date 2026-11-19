@@ -3821,7 +3821,7 @@ List<Widget> settingsMore(BuildContext context, Profile profile) {
         Align(
           alignment: Alignment.centerLeft,
           child: OutlinedButton.icon(
-            onPressed: () => pushNotice('Messages', Icons.notifications_active, 'Test notification', 'This is how notifications look. Tap to open the Dashboard.', tab: 0),
+            onPressed: () => pushNotice('Messages', Icons.notifications_active, 'Test notification', 'This is how notifications look. Tap to open the Dashboard.', tab: 2),
             icon: const Icon(Icons.notifications_active_outlined),
             label: const Text('Send a test notification'),
           ),
@@ -4543,7 +4543,7 @@ extension NoticeDemos on AppState {
       if (!friends.contains(p.tag) && !incomingFriendReqs.contains(p) && !invited.contains(p.tag) && !blocked.contains(p.tag)) {
         incomingFriendReqs.add(p);
         touch();
-        pushNotice('Friend requests', Icons.person_add_alt, 'New friend request', '${p.tag} wants to join your squad.', tab: 0);
+        pushNotice('Friend requests', Icons.person_add_alt, 'New friend request', '${p.tag} wants to join your squad.', tab: 2);
         return;
       }
     }
@@ -4557,7 +4557,7 @@ extension NoticeDemos on AppState {
       if (!g.requests.contains(p) && !friends.contains(p.tag) && !incomingFriendReqs.contains(p)) {
         g.requests.add(p);
         touch();
-        pushNotice('Group activity', Icons.groups, 'New join request', '${p.tag} wants to join ${g.name}.', color: Colors.amber, tab: 0);
+        pushNotice('Group activity', Icons.groups, 'New join request', '${p.tag} wants to join ${g.name}.', color: Colors.amber, tab: 2);
         return;
       }
     }
