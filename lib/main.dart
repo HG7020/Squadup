@@ -330,6 +330,8 @@ class GMember {
   String role; // owner | admin | member
   bool canChat, canAnnounce, canManage;
   GMember(this.who, {this.role = 'member', this.canChat = true, this.canAnnounce = false, this.canManage = false});
+  final Set<String> labels = {}; // ids of the labels (positions / roles) the owner gave this member
+  bool mod = false; // community moderator
   String get name => whoName(who);
 }
 
@@ -348,8 +350,17 @@ class Group {
   final List<GMember> members;
   final List<Post> chat = [], news = [];
   final List<Object> requests = [];
+  bool isCommunity = false; // groups and communities are separate sections
+  int? maxMembers; // null = no limit; the owner can change it any time
+  String rules = '';
+  bool rulesRequired = true;
+  final Set<Object> accepted = {}, banned = {};
+  final List<GLabel> labels = [];
+  final List<LabelReq> labelReqs = [];
+  late final List<GChannel> channels = [GChannel('General', chat), GChannel('Looking for game', []), GChannel('Off-topic', [])];
+  bool get isFull => maxMembers != null && members.length >= maxMembers!;
   /// What non-members can see (the owner decides).
-  final Map<String, bool> show = {'Description': true, 'Games': true, 'Members': true, 'Announcements': true};
+  final Map<String, bool> show = {'Description': true, 'Games': true, 'Members': true, 'Announcements': true, 'Labels': true, 'Squad sheet': true};
   Group(this.id, this.name, this.description, this.isPublic, this.games, this.platform, this.region, this.members);
   GMember? memberOf(Object? who) {
     if (who == null) return null;
@@ -377,7 +388,7 @@ bool gCanAnnounce(Group g) {
 
 bool gCanManage(Group g) {
   final m = g.memberOf(S.me);
-  return m != null && (m.role == 'owner' || (m.role == 'admin' && m.canManage));
+  return m != null && (m.role == 'owner' || (m.role == 'admin' && m.canManage) || (g.isCommunity && m.mod));
 }
 
 List<Group> _seedGroups(Profile demo) {
@@ -403,7 +414,7 @@ List<Group> _seedGroups(Profile demo) {
     g.chat.add(Post(g.owner.who, 'Welcome to ${g.name}! Say hi 👋'));
     g.news.add(Post(g.owner.who, 'Group rules: be kind, communicate, and have fun.'));
   }
-  return gs;
+  return [...gs, ..._seedCommunities(demo, gs)];
 }
 
 const _groupReplies = ['Count me in!', 'Anyone up for a session tonight?', 'GG everyone 🎮', 'Nice, see you online.', 'I can host if we need a lobby.'];
@@ -527,6 +538,14 @@ class AppState extends ChangeNotifier {
   void joinGroup(Group g) {
     final u = me;
     if (u == null || g.memberOf(u) != null) return;
+    if (g.banned.contains(u)) {
+      toast('You cannot join ${g.name}');
+      return;
+    }
+    if (g.isFull) {
+      toast('${g.name} is full');
+      return;
+    }
     if (g.isPublic) {
       g.members.add(GMember(u));
       g.chat.add(Post(u, 'joined the group 👋'));
@@ -543,10 +562,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Group createGroup(String name, String desc, bool pub, List<String> games, String plat, String reg, Map<String, bool> show) {
+  Group createGroup(String name, String desc, bool pub, List<String> games, String plat, String reg, Map<String, bool> show,
+      {bool community = false, int? max, String template = 'Start blank', String rules = ''}) {
     final g = Group('g${DateTime.now().millisecondsSinceEpoch}', name, desc, pub, games, plat, reg,
         [GMember(me!, role: 'owner', canAnnounce: true, canManage: true)]);
     g.show.addAll(show);
+    g.isCommunity = community;
+    g.maxMembers = max;
+    g.rules = rules;
+    applyTemplate(g, template);
     g.chat.add(Post(me!, 'Welcome to $name! 🎮'));
     groups.insert(0, g);
     notifyListeners();
@@ -560,7 +584,11 @@ class AppState extends ChangeNotifier {
 
   void approve(Group g, Object who, bool ok) {
     g.requests.remove(who);
-    if (ok) g.members.add(GMember(who));
+    if (ok && g.isFull) {
+      toast('${g.name} is full. Raise the member limit to approve more people.');
+    } else if (ok) {
+      g.members.add(GMember(who));
+    }
     notifyListeners();
   }
 
@@ -569,13 +597,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void groupSay(Group g, String text) {
-    g.chat.add(Post(me!, text));
+  void groupSay(Group g, String text, {List<Post>? into}) {
+    final list = into ?? g.chat;
+    list.add(Post(me!, text));
     notifyListeners();
     Timer(const Duration(milliseconds: 1400), () {
       final others = g.members.where((m) => !identical(m.who, me) && m.canChat).toList();
       if (others.isEmpty || !groups.contains(g)) return;
-      g.chat.add(Post(others[g.chat.length % others.length].who, _groupReplies[g.chat.length % _groupReplies.length]));
+      list.add(Post(others[list.length % others.length].who, _groupReplies[list.length % _groupReplies.length]));
       notifyListeners();
     });
   }
@@ -3546,10 +3575,10 @@ extension LfgActions on AppState {
     }
   }
 
-  void createEvent(String title, String game, DateTime when) {
+  void createEvent(String title, String game, DateTime when, {Group? group}) {
     final u = me;
     if (u == null) return;
-    events.insert(0, SquadEvent(title, game, when, u)..going.add(u));
+    events.insert(0, SquadEvent(title, game, when, u, group: group)..going.add(u));
     touch();
     toast('Event created');
   }
@@ -3727,10 +3756,10 @@ List<SquadEvent> _seedEvents() {
   ];
 }
 
-Future<void> showEventDialog(BuildContext context) async {
+Future<void> showEventDialog(BuildContext context, {Group? group}) async {
   final me = S.me;
   if (me == null) return;
-  var game = me.games.isNotEmpty ? me.games.first : kSorted.first;
+  var game = group != null && group.games.isNotEmpty ? group.games.first : (me.games.isNotEmpty ? me.games.first : kSorted.first);
   var date = DateTime.now().add(const Duration(days: 1));
   var time = const TimeOfDay(hour: 19, minute: 0);
   final title = TextEditingController();
@@ -3745,7 +3774,7 @@ Future<void> showEventDialog(BuildContext context) async {
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               outLabel('Event name', TextField(controller: title, maxLength: 50)),
-              PickField(label: 'Game', value: game, options: kSorted, onChanged: (v) => set(() => game = v)),
+              PickField(label: 'Game', value: game, options: group?.games ?? kSorted, onChanged: (v) => set(() => game = v)),
               const SizedBox(height: 14),
               outLabel(
                 'Date and time',
@@ -3784,7 +3813,7 @@ Future<void> showEventDialog(BuildContext context) async {
                 toast('Give the event a name');
                 return;
               }
-              S.createEvent(title.text.trim(), game, DateTime(date.year, date.month, date.day, time.hour, time.minute));
+              S.createEvent(title.text.trim(), game, DateTime(date.year, date.month, date.day, time.hour, time.minute), group: group);
               Navigator.pop(d);
             },
             child: const Text('Create'),
@@ -3796,7 +3825,7 @@ Future<void> showEventDialog(BuildContext context) async {
 }
 
 Widget eventsSec(BuildContext context) {
-  final list = S.events.where((e) => e.when.isAfter(DateTime.now().subtract(const Duration(hours: 2)))).toList()..sort((a, b) => a.when.compareTo(b.when));
+  final list = S.events.where((e) => e.when.isAfter(DateTime.now().subtract(const Duration(hours: 2))) && (e.group == null || e.group!.memberOf(S.me) != null)).toList()..sort((a, b) => a.when.compareTo(b.when));
   return Sec(
     'Upcoming events',
     Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -5431,6 +5460,487 @@ List<Widget> playerTagSecs(Player p) {
   ];
 }
 
+// ───────────────────────── Member labels, communities & member limits ─────────────────────────
+class GLabel {
+  final String id;
+  String name;
+  int color;
+  GLabel(this.id, this.name, this.color);
+  Color get c => Color(color);
+}
+
+class LabelReq {
+  final Object who;
+  final String labelId;
+  LabelReq(this.who, this.labelId);
+}
+
+class GChannel {
+  String name;
+  final List<Post> posts;
+  GChannel(this.name, this.posts);
+}
+
+const kLabelColors = [0xFFE53935, 0xFFFB8C00, 0xFFFDD835, 0xFF43A047, 0xFF26A69A, 0xFF1E88E5, 0xFF8E24AA, 0xFFEC407A, 0xFF78909C];
+
+const kLabelTemplates = <String, List<(String, int)>>{
+  'Start blank': [],
+  'Pro Clubs positions': [
+    ('GK', 0xFFFDD835), ('CB', 0xFF1E88E5), ('LB', 0xFF42A5F5), ('RB', 0xFF42A5F5), ('CDM', 0xFF26A69A),
+    ('CM', 0xFF43A047), ('CAM', 0xFF7CB342), ('LW', 0xFF8E24AA), ('RW', 0xFF8E24AA), ('ST', 0xFFE53935),
+  ],
+  'GTA roleplay roles': [
+    ('Police', 0xFF1E88E5), ('EMS / Medic', 0xFFE53935), ('Mechanic', 0xFFFB8C00), ('Taxi driver', 0xFFFDD835),
+    ('Business owner', 0xFF43A047), ('Gang member', 0xFF8E24AA), ('Civilian', 0xFF78909C),
+  ],
+  'Esports team roles': [('IGL', 0xFFE53935), ('Entry', 0xFFFB8C00), ('Support', 0xFF43A047), ('Sniper', 0xFF1E88E5), ('Lurker', 0xFF8E24AA), ('Coach', 0xFF78909C)],
+  'Raid roles': [('Tank', 0xFF1E88E5), ('Healer', 0xFF43A047), ('DPS', 0xFFE53935), ('Support', 0xFFFB8C00)],
+};
+
+GLabel? labelOf(Group g, String id) {
+  for (final l in g.labels) {
+    if (l.id == id) return l;
+  }
+  return null;
+}
+
+void applyTemplate(Group g, String name) {
+  for (final (n, c) in kLabelTemplates[name] ?? const <(String, int)>[]) {
+    if (g.labels.any((l) => l.name == n)) continue;
+    g.labels.add(GLabel('l${DateTime.now().microsecondsSinceEpoch}${g.labels.length}', n, c));
+  }
+}
+
+bool gLabelsVisible(Group g) => gIsMember(g) || g.canView('Labels');
+
+Widget labelChip(GLabel l) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(color: l.c.withAlpha(46), border: Border.all(color: l.c.withAlpha(150)), borderRadius: BorderRadius.circular(8)),
+      child: Text(l.name, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+    );
+
+Widget labelTags(Group g, GMember m) => Wrap(spacing: 4, runSpacing: 4, children: [
+      for (final id in m.labels)
+        if (labelOf(g, id) != null) labelChip(labelOf(g, id)!),
+    ]);
+
+Future<void> editLabel(BuildContext context, Group g, GLabel? l) async {
+  final name = TextEditingController(text: l?.name ?? '');
+  var color = l?.color ?? kLabelColors.first;
+  await showDialog<void>(
+    context: context,
+    builder: (d) => StatefulBuilder(
+      builder: (d, set) => AlertDialog(
+        backgroundColor: kCard,
+        title: Text(l == null ? 'Add label' : 'Edit label'),
+        content: SizedBox(
+          width: 380,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            outLabel('Label name', TextField(controller: name, autofocus: true, maxLength: 24)),
+            const SizedBox(height: 8),
+            const Text('Colour', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              for (final c in kLabelColors)
+                GestureDetector(
+                  onTap: () => set(() => color = c),
+                  child: CircleAvatar(radius: 15, backgroundColor: Color(c), child: color == c ? const Icon(Icons.check, size: 16, color: Colors.white) : null),
+                ),
+            ]),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              final t = name.text.trim();
+              if (t.isEmpty) {
+                toast('Give the label a name');
+                return;
+              }
+              if (l == null) {
+                g.labels.add(GLabel('l${DateTime.now().microsecondsSinceEpoch}', t, color));
+              } else {
+                l.name = t;
+                l.color = color;
+              }
+              S.update();
+              Navigator.pop(d);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+Future<void> addTemplateSheet(BuildContext context, Group g) => showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kCard,
+      builder: (c) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          const Padding(padding: EdgeInsets.all(16), child: Text('Add labels from a template', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          for (final e in kLabelTemplates.entries)
+            if (e.value.isNotEmpty)
+              ListTile(
+                title: Text(e.key),
+                subtitle: Text(e.value.map((x) => x.$1).join(', '), maxLines: 2, overflow: TextOverflow.ellipsis),
+                onTap: () {
+                  applyTemplate(g, e.key);
+                  S.update();
+                  Navigator.pop(c);
+                  toast('Labels added');
+                },
+              ),
+        ]),
+      ),
+    );
+
+Future<void> editLimitDialog(BuildContext context, Group g) async {
+  final c = TextEditingController(text: g.maxMembers?.toString() ?? '');
+  final least = g.members.length < 2 ? 2 : g.members.length;
+  await showDialog<void>(
+    context: context,
+    builder: (d) => AlertDialog(
+      backgroundColor: kCard,
+      title: const Text('Member limit'),
+      content: outLabel('Maximum members (${g.members.length} now)', TextField(controller: c, keyboardType: TextInputType.number, autofocus: true)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () {
+            g.maxMembers = null;
+            S.update();
+            Navigator.pop(d);
+          },
+          child: const Text('No limit'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final n = int.tryParse(c.text.trim());
+            if (n == null || n < least) {
+              toast('Enter a number of $least or more');
+              return;
+            }
+            g.maxMembers = n;
+            S.update();
+            Navigator.pop(d);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> editRulesDialog(BuildContext context, Group g) async {
+  final c = TextEditingController(text: g.rules);
+  await showDialog<void>(
+    context: context,
+    builder: (d) => AlertDialog(
+      backgroundColor: kCard,
+      title: const Text('Community rules'),
+      content: SizedBox(width: 420, child: outLabel('Rules', TextField(controller: c, maxLines: 6, maxLength: 600, autofocus: true))),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            g.rules = c.text.trim();
+            S.update();
+            Navigator.pop(d);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Squad sheet: members listed by label, with empty slots flagged. Owners manage labels here.
+class SquadSheetTab extends StatelessWidget {
+  final Group g;
+  const SquadSheetTab(this.g, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final member = gIsMember(g);
+    if (!member && !g.canView('Squad sheet')) {
+      return Center(child: Padding(padding: const EdgeInsets.all(24), child: lockedRow('The owner has hidden the squad sheet from non-members')));
+    }
+    final manage = gCanManage(g);
+    final names = member || g.canView('Members');
+    final me = S.me;
+    final unlabelled = g.members.where((m) => m.labels.isEmpty).toList();
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          if (manage)
+            Sec(
+              'Manage labels',
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Labels show next to members. Use them for positions, roles or anything else. Assign them from the Members tab.', style: TextStyle(color: kMuted, fontSize: 12.5)),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final l in g.labels)
+                    InputChip(
+                      avatar: CircleAvatar(backgroundColor: l.c, radius: 6),
+                      label: Text(l.name),
+                      onPressed: () => editLabel(context, g, l),
+                      onDeleted: () {
+                        for (final m in g.members) {
+                          m.labels.remove(l.id);
+                        }
+                        g.labelReqs.removeWhere((r) => r.labelId == l.id);
+                        g.labels.remove(l);
+                        S.update();
+                      },
+                    ),
+                  ActionChip(avatar: const Icon(Icons.add, size: 16), label: const Text('Add label'), onPressed: () => editLabel(context, g, null)),
+                ]),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(onPressed: () => addTemplateSheet(context, g), icon: const Icon(Icons.auto_awesome_outlined), label: const Text('Add from a template')),
+              ]),
+            ),
+          if (manage && g.labelReqs.isNotEmpty)
+            Sec(
+              'Label requests (${g.labelReqs.length})',
+              Column(children: [
+                for (final r in List.of(g.labelReqs))
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: whoAvatar(r.who, radius: 18),
+                    title: Text('${whoName(r.who)} wants ${labelOf(g, r.labelId)?.name ?? 'a label'}'),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                      IconButton(tooltip: 'Decline', onPressed: () {
+                        g.labelReqs.remove(r);
+                        S.update();
+                      }, icon: const Icon(Icons.close, color: Colors.redAccent)),
+                      IconButton(tooltip: 'Approve', onPressed: () {
+                        g.memberOf(r.who)?.labels.add(r.labelId);
+                        g.labelReqs.remove(r);
+                        S.update();
+                      }, icon: const Icon(Icons.check, color: kAccent)),
+                    ]),
+                  ),
+              ]),
+            ),
+          if (g.labels.isEmpty)
+            Sec('Squad sheet', Text(manage ? 'No labels yet. Add some above or start from a template.' : 'The owner has not set up labels yet.', style: const TextStyle(color: kMuted))),
+          for (final l in g.labels)
+            Builder(builder: (context) {
+              final holders = g.members.where((m) => m.labels.contains(l.id)).toList();
+              final mineHas = me != null && g.memberOf(me)?.labels.contains(l.id) == true;
+              final pending = me != null && g.labelReqs.any((r) => identical(r.who, me) && r.labelId == l.id);
+              return Sec(
+                l.name,
+                holders.isEmpty
+                    ? const Text('Nobody yet', style: TextStyle(color: Colors.amber))
+                    : names
+                        ? Wrap(spacing: 12, runSpacing: 8, children: [
+                            for (final m in holders) Row(mainAxisSize: MainAxisSize.min, children: [whoAvatar(m.who, radius: 12), const SizedBox(width: 6), Text(m.name)]),
+                          ])
+                        : Text('${holders.length} player${holders.length == 1 ? '' : 's'}', style: const TextStyle(color: kMuted)),
+                action: member && !mineHas && !gIsOwner(g)
+                    ? (pending
+                        ? const Padding(padding: EdgeInsets.all(8), child: Text('Requested', style: TextStyle(color: kMuted, fontSize: 12)))
+                        : TextButton(
+                            onPressed: () {
+                              final req = LabelReq(me!, l.id);
+                              g.labelReqs.add(req);
+                              S.update();
+                              toast('Request sent to the owner');
+                              if (g.owner.who is Player) {
+                                Timer(const Duration(seconds: 10), () {
+                                  if (!g.labelReqs.remove(req)) return;
+                                  g.memberOf(me)?.labels.add(l.id);
+                                  S.update();
+                                  pushNotice('Group activity', Icons.label_outline, 'Label approved', 'You are now ${l.name} in ${g.name}.', color: l.c, tab: 4);
+                                });
+                              }
+                            },
+                            child: const Text('Request this'),
+                          ))
+                    : null,
+              );
+            }),
+          if (names && g.labels.isNotEmpty && unlabelled.isNotEmpty)
+            Sec('No label yet (${unlabelled.length})', Wrap(spacing: 12, runSpacing: 8, children: [for (final m in unlabelled) Text(m.name, style: const TextStyle(color: kMuted))])),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Community chat: several channels, plus the rules gate for new members.
+class CommunityChatTab extends StatefulWidget {
+  final Group g;
+  const CommunityChatTab(this.g, {super.key});
+  @override
+  State<CommunityChatTab> createState() => _CommunityChatTabState();
+}
+
+class _CommunityChatTabState extends State<CommunityChatTab> {
+  int ch = 0;
+
+  Future<void> addChannel() async {
+    final c = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: kCard,
+        title: const Text('New channel'),
+        content: outLabel('Channel name', TextField(controller: c, autofocus: true, maxLength: 24)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(d, c.text.trim()), child: const Text('Create')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    widget.g.channels.add(GChannel(name, []));
+    S.update();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final g = widget.g;
+    if (!gIsMember(g)) {
+      return Center(child: Padding(padding: const EdgeInsets.all(24), child: lockedRow('Join this community to read and send messages')));
+    }
+    if (g.rules.trim().isNotEmpty && g.rulesRequired && !gIsOwner(g) && !g.accepted.contains(S.me)) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(padding: const EdgeInsets.all(16), children: [
+            Sec(
+              'Community rules',
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(g.rules),
+                const SizedBox(height: 14),
+                const Text('Please accept the rules to join the chat.', style: TextStyle(color: kMuted)),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  onPressed: () {
+                    g.accepted.add(S.me!);
+                    S.update();
+                  },
+                  icon: const Icon(Icons.check),
+                  label: const Text('I accept the rules'),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+      );
+    }
+    if (ch >= g.channels.length) ch = 0;
+    final channel = g.channels[ch];
+    return Column(children: [
+      SizedBox(
+        height: 52,
+        child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.fromLTRB(12, 8, 12, 4), children: [
+          for (var i = 0; i < g.channels.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(label: Text('# ${g.channels[i].name}'), selected: i == ch, onSelected: (_) => setState(() => ch = i)),
+            ),
+          if (gCanManage(g)) ActionChip(avatar: const Icon(Icons.add, size: 16), label: const Text('New channel'), onPressed: addChannel),
+        ]),
+      ),
+      Expanded(child: GroupChatTab(g, key: ValueKey('${g.id}-${channel.name}'), posts: channel.posts, hint: 'Message #${channel.name}')),
+    ]);
+  }
+}
+
+/// Community events: only the community's own events.
+class CommunityEventsTab extends StatelessWidget {
+  final Group g;
+  const CommunityEventsTab(this.g, {super.key});
+  @override
+  Widget build(BuildContext context) {
+    final member = gIsMember(g);
+    if (!member && !g.canView('Events')) {
+      return Center(child: Padding(padding: const EdgeInsets.all(24), child: lockedRow('The owner has hidden events from non-members')));
+    }
+    final list = S.events.where((e) => identical(e.group, g)).toList()..sort((a, b) => a.when.compareTo(b.when));
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          if (gCanManage(g))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Align(alignment: Alignment.centerLeft, child: FilledButton.icon(onPressed: () => showEventDialog(context, group: g), icon: const Icon(Icons.add), label: const Text('Create community event'))),
+            ),
+          if (list.isEmpty) const Padding(padding: EdgeInsets.all(32), child: Center(child: Text('No community events yet.', style: TextStyle(color: kMuted)))),
+          for (final e in list)
+            Sec(
+              e.title,
+              Row(children: [
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('${e.game} · ${fmtWhen(e.when)}', style: const TextStyle(color: kMuted)),
+                    Text('${e.going.length} going · hosted by ${whoName(e.host)}', style: const TextStyle(color: kMuted, fontSize: 12.5)),
+                  ]),
+                ),
+                if (member)
+                  e.going.any((x) => identical(x, S.me))
+                      ? FilledButton(onPressed: () => S.toggleRsvp(e), child: const Text('Going'))
+                      : OutlinedButton(onPressed: () => S.toggleRsvp(e), child: const Text('RSVP')),
+              ]),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+List<Group> _seedCommunities(Profile demo, List<Group> gs) {
+  GMember own(int i) => GMember(kPlayers[i], role: 'owner', canAnnounce: true, canManage: true);
+  GMember adm(int i) => GMember(kPlayers[i], role: 'admin', canAnnounce: true, canManage: true);
+  GMember mem(int i) => GMember(kPlayers[i]);
+  void labelUp(Group g) {
+    for (var i = 0; i < g.members.length; i++) {
+      if (g.labels.isEmpty) return;
+      g.members[i].labels.add(g.labels[(i * 3 + 1) % g.labels.length].id);
+    }
+  }
+
+  final cs = <Group>[
+    Group('c1', 'Pro Clubs UK Community', 'The home for UK Pro Clubs players: league nights, scrims and a position-based squad sheet.', true,
+        ['EA Sports FC 27', 'EA Sports FC 26'], 'PlayStation', 'Europe',
+        [own(4), adm(8), for (final i in const [0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]) mem(i)]),
+    Group('c2', 'Los Santos Roleplay', 'A serious GTA roleplay community with jobs, factions and weekly storylines.', true,
+        ['Grand Theft Auto V', 'Grand Theft Auto VI'], 'PlayStation', 'Any',
+        [own(12), adm(9), for (final i in const [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) mem(i)]),
+    Group('c3', 'SquadUp Demo Community', 'The demo community: you own it, so you can try channels, rules, moderators and labels.', false,
+        ['Apex Legends', 'Valorant'], 'Any', 'Any',
+        [GMember(demo, role: 'owner', canAnnounce: true, canManage: true), adm(5), mem(13), mem(9), mem(2), mem(7), mem(11)]),
+  ];
+  for (final g in cs) {
+    g.isCommunity = true;
+    g.show.addAll({'Rules': true, 'Events': true});
+    g.rules = '1. Be respectful to everyone.\n2. No cheating, boosting or account sharing.\n3. Keep each channel on topic.\n4. Follow staff instructions.';
+    g.chat.add(Post(g.owner.who, 'Welcome to ${g.name}! Read the rules, then say hi 👋'));
+    g.channels[1].posts.add(Post(g.owner.who, 'Post your game, platform and time here to find a match.'));
+    g.news.add(Post(g.owner.who, 'Community rules are in the Overview tab.'));
+  }
+  applyTemplate(cs[0], 'Pro Clubs positions');
+  applyTemplate(cs[1], 'GTA roleplay roles');
+  applyTemplate(cs[2], 'Esports team roles');
+  applyTemplate(gs[1], 'Pro Clubs positions');
+  for (final g in [cs[0], cs[1], cs[2], gs[1]]) {
+    labelUp(g);
+  }
+  cs[0].members[2].mod = true;
+  cs[1].members[2].mod = true;
+  cs[2].maxMembers = 50;
+  gs[6].maxMembers = gs[6].members.length; // a full group, so you can see the "Full" state
+  return cs;
+}
+
 // ───────────────────────── Home shell ─────────────────────────
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -6838,11 +7348,13 @@ class _GroupsTabState extends State<GroupsTab> {
   final q = TextEditingController();
   String fGame = 'Any', fVis = 'Any', fPlat = 'Any', fRegion = 'Any';
   bool mineOnly = false;
+  bool communities = false; // Groups and Communities are separate sections
 
   List<Group> get results {
     final t = q.text.trim().toLowerCase();
     return S.groups
         .where((g) =>
+            g.isCommunity == communities &&
             (t.isEmpty || g.name.toLowerCase().contains(t) || g.games.any((x) => x.toLowerCase().contains(t))) &&
             (fGame == 'Any' || g.games.contains(fGame)) &&
             (fVis == 'Any' || (fVis == 'Public') == g.isPublic) &&
@@ -6862,19 +7374,31 @@ class _GroupsTabState extends State<GroupsTab> {
         listenable: S,
         builder: (context, _) {
           final r = results;
-          final games = <String>{for (final g in S.groups) ...g.games}.toList()..sort();
+          final games = <String>{for (final g in S.groups) if (g.isCommunity == communities) ...g.games}.toList()..sort();
           return Column(children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
-                  Expanded(child: pageTitle('Groups')),
+                  Expanded(child: pageTitle(communities ? 'Communities' : 'Groups')),
                   FilledButton.icon(
-                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CreateGroupScreen(community: communities))),
                     icon: const Icon(Icons.add),
-                    label: const Text('Create group'),
+                    label: Text(communities ? 'Create community' : 'Create group'),
                   ),
                 ]),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Groups'), icon: Icon(Icons.groups_outlined)),
+                    ButtonSegment(value: true, label: Text('Communities'), icon: Icon(Icons.diversity_3)),
+                  ],
+                  selected: {communities},
+                  onSelectionChanged: (v) => setState(() {
+                    communities = v.first;
+                    fGame = 'Any';
+                  }),
+                ),
+                const SizedBox(height: 10),
                 searchField(q, (_) => setState(() {})),
               ]),
             ),
@@ -6893,7 +7417,7 @@ class _GroupsTabState extends State<GroupsTab> {
                           child: ExpansionTile(
                             leading: const Icon(Icons.tune, color: kAccent),
                             title: const Text('Filters'),
-                            subtitle: Text('${r.length} group${r.length == 1 ? '' : 's'}'),
+                            subtitle: Text(communities ? '${r.length} communit${r.length == 1 ? 'y' : 'ies'}' : '${r.length} group${r.length == 1 ? '' : 's'}'),
                             childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                             children: [
                               Wrap(spacing: 12, runSpacing: 12, children: [
@@ -6919,8 +7443,8 @@ class _GroupsTabState extends State<GroupsTab> {
                       ),
                       const SizedBox(height: 10),
                       Wrap(spacing: 8, children: [
-                        ChoiceChip(label: const Text('All groups'), selected: !mineOnly, onSelected: (_) => setState(() => mineOnly = false)),
-                        ChoiceChip(label: const Text('My groups'), selected: mineOnly, onSelected: (_) => setState(() => mineOnly = true)),
+                        ChoiceChip(label: Text('All ${communities ? 'communities' : 'groups'}'), selected: !mineOnly, onSelected: (_) => setState(() => mineOnly = false)),
+                        ChoiceChip(label: Text('My ${communities ? 'communities' : 'groups'}'), selected: mineOnly, onSelected: (_) => setState(() => mineOnly = true)),
                       ]),
                     ]),
                   ),
@@ -6929,7 +7453,7 @@ class _GroupsTabState extends State<GroupsTab> {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
                     child: r.isEmpty
-                        ? const Padding(padding: EdgeInsets.all(32), child: Center(child: Text('No groups match. Try different filters or create your own.', textAlign: TextAlign.center)))
+                        ? Padding(padding: const EdgeInsets.all(32), child: Center(child: Text('No ${communities ? 'communities' : 'groups'} match. Try different filters or create your own.', textAlign: TextAlign.center)))
                         : FlowGrid([for (final g in r) GroupCard(g)], minWidth: 420),
                   ),
                 ),
@@ -6966,8 +7490,9 @@ class GroupCard extends StatelessWidget {
                   Text(g.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 4),
                   Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                    if (g.isCommunity) infoChip('Community', icon: Icons.diversity_3, color: kAccent),
                     infoChip(g.isPublic ? 'Public' : 'Private', icon: g.isPublic ? Icons.public : Icons.lock_outline),
-                    Text('${g.members.length} members', style: const TextStyle(color: kMuted, fontSize: 12)),
+                    Text('${g.members.length}${g.maxMembers == null ? '' : ' / ${g.maxMembers}'} members', style: const TextStyle(color: kMuted, fontSize: 12)),
                   ]),
                 ]),
               ),
@@ -6995,7 +7520,9 @@ class GroupCard extends StatelessWidget {
                   ? MiniButton(label: 'Open', icon: Icons.open_in_new, filled: false, onTap: () => openGroup(context, g))
                   : pending
                       ? const MiniButton(label: 'Requested', icon: Icons.hourglass_top, onTap: null)
-                      : MiniButton(label: g.isPublic ? 'Join' : 'Request to join', icon: g.isPublic ? Icons.login : Icons.lock_open, onTap: () => S.joinGroup(g)),
+                      : g.isFull
+                          ? const MiniButton(label: 'Full', icon: Icons.block, onTap: null)
+                          : MiniButton(label: g.isPublic ? 'Join' : 'Request to join', icon: g.isPublic ? Icons.login : Icons.lock_open, onTap: () => S.joinGroup(g)),
             ),
           ]),
         ),
@@ -7014,8 +7541,17 @@ class GroupScreen extends StatelessWidget {
           if (!S.groups.contains(g)) {
             return Scaffold(appBar: AppBar(), body: const Center(child: Text('This group no longer exists.')));
           }
+          final tabs = <(String, Widget)>[
+            ('Overview', GroupOverview(g)),
+            (g.isCommunity ? 'Channels' : 'Group chat', g.isCommunity ? CommunityChatTab(g) : GroupChatTab(g)),
+            ('Announcements', GroupNewsTab(g)),
+            if (g.isCommunity) ('Events', CommunityEventsTab(g)),
+            ('Members', GroupMembersTab(g)),
+            ('Squad sheet', SquadSheetTab(g)),
+          ];
           return DefaultTabController(
-            length: 4,
+            key: ValueKey('${g.id}-${tabs.length}'),
+            length: tabs.length,
             child: Scaffold(
               appBar: AppBar(
                 title: Row(children: [
@@ -7024,13 +7560,13 @@ class GroupScreen extends StatelessWidget {
                   Expanded(child: Text(g.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
                   Icon(g.isPublic ? Icons.public : Icons.lock_outline, size: 18, color: kMuted),
                 ]),
-                bottom: const TabBar(
+                bottom: TabBar(
                   isScrollable: true,
                   tabAlignment: TabAlignment.start,
-                  tabs: [Tab(text: 'Overview'), Tab(text: 'Group chat'), Tab(text: 'Announcements'), Tab(text: 'Members')],
+                  tabs: [for (final t in tabs) Tab(text: t.$1)],
                 ),
               ),
-              body: TabBarView(children: [GroupOverview(g), GroupChatTab(g), GroupNewsTab(g), GroupMembersTab(g)]),
+              body: TabBarView(children: [for (final t in tabs) t.$2]),
             ),
           );
         },
@@ -7084,22 +7620,25 @@ class GroupOverview extends StatelessWidget {
                   ])
                 : lockedRow('The owner has hidden the games from non-members'),
           ),
+          if (g.isCommunity)
+            Sec('Rules', member || g.canView('Rules') ? Text(g.rules.isEmpty ? 'No rules yet.' : g.rules) : lockedRow('The owner has hidden the rules from non-members')),
           Sec(
-            'Details',
+            g.isCommunity ? 'Community details' : 'Details',
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               detailRow(g.isPublic ? Icons.public : Icons.lock_outline, g.isPublic ? 'Public group: anyone can join' : 'Private group: members join by request'),
               detailRow(Icons.devices, g.platform == 'Any' ? 'All platforms' : g.platform),
               detailRow(Icons.place_outlined, g.region == 'Any' ? 'Worldwide' : g.region),
-              detailRow(Icons.people_outline, '${g.members.length} members'),
+              detailRow(g.isCommunity ? Icons.diversity_3 : Icons.groups, g.isCommunity ? 'Community' : 'Group'),
+              detailRow(Icons.people_outline, '${g.members.length}${g.maxMembers == null ? '' : ' of ${g.maxMembers}'} members${g.isFull ? ' (full)' : ''}'),
               detailRow(Icons.shield_outlined, 'Owner: ${g.owner.name}'),
             ]),
           ),
           if (!member)
             FilledButton.icon(
               style: bigBtn(),
-              onPressed: pending ? null : () => S.joinGroup(g),
+              onPressed: pending || g.isFull ? null : () => S.joinGroup(g),
               icon: Icon(pending ? Icons.hourglass_top : (g.isPublic ? Icons.login : Icons.lock_open)),
-              label: Text(pending ? 'Request sent' : (g.isPublic ? 'Join group' : 'Request to join')),
+              label: Text(g.isFull ? 'Full: no spaces left' : (pending ? 'Request sent' : (g.isPublic ? 'Join ${g.isCommunity ? 'community' : 'group'}' : 'Request to join'))),
             )
           else if (!gIsOwner(g))
             OutlinedButton.icon(
@@ -7114,7 +7653,7 @@ class GroupOverview extends StatelessWidget {
           if (gIsOwner(g)) ...[
             const SizedBox(height: 16),
             Sec(
-              'Group settings (owner)',
+              '${g.isCommunity ? 'Community' : 'Group'} settings (owner)',
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -7126,6 +7665,34 @@ class GroupOverview extends StatelessWidget {
                     S.update();
                   },
                 ),
+                const Divider(),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.people_outline),
+                  title: const Text('Member limit'),
+                  subtitle: Text(g.maxMembers == null ? 'No limit' : '${g.maxMembers} members (${g.members.length} now)'),
+                  trailing: const Icon(Icons.edit, size: 18),
+                  onTap: () => editLimitDialog(context, g),
+                ),
+                if (g.isCommunity) ...[
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.rule),
+                    title: const Text('Community rules'),
+                    subtitle: Text(g.rules.isEmpty ? 'No rules yet' : g.rules, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    trailing: const Icon(Icons.edit, size: 18),
+                    onTap: () => editRulesDialog(context, g),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('New members must accept the rules before chatting'),
+                    value: g.rulesRequired,
+                    onChanged: (v) {
+                      g.rulesRequired = v;
+                      S.update();
+                    },
+                  ),
+                ],
                 const Divider(),
                 const Padding(padding: EdgeInsets.symmetric(vertical: 6), child: Text('What non-members can see', style: TextStyle(fontWeight: FontWeight.bold))),
                 for (final k in g.show.keys.toList())
@@ -7156,7 +7723,9 @@ class GroupOverview extends StatelessWidget {
 
 class GroupChatTab extends StatefulWidget {
   final Group g;
-  const GroupChatTab(this.g, {super.key});
+  final List<Post>? posts; // a community channel's messages (defaults to the group chat)
+  final String hint;
+  const GroupChatTab(this.g, {super.key, this.posts, this.hint = 'Message the group…'});
   @override
   State<GroupChatTab> createState() => _GroupChatTabState();
 }
@@ -7169,12 +7738,13 @@ class _GroupChatTabState extends State<GroupChatTab> {
     final t = c.text.trim();
     if (t.isEmpty) return;
     c.clear();
-    S.groupSay(widget.g, t);
+    S.groupSay(widget.g, t, into: widget.posts);
   }
 
   @override
   Widget build(BuildContext context) {
     final g = widget.g;
+    final posts = widget.posts ?? g.chat;
     if (!gIsMember(g)) {
       return Center(child: Padding(padding: const EdgeInsets.all(24), child: lockedRow('Join this group to read and send messages')));
     }
@@ -7186,14 +7756,14 @@ class _GroupChatTabState extends State<GroupChatTab> {
         constraints: const BoxConstraints(maxWidth: 800),
         child: Column(children: [
           Expanded(
-            child: g.chat.isEmpty
+            child: posts.isEmpty
                 ? const Center(child: Text('No messages yet. Say hi 👋', style: TextStyle(color: kMuted)))
                 : ListView.builder(
                     controller: sc,
                     padding: const EdgeInsets.all(16),
-                    itemCount: g.chat.length,
+                    itemCount: posts.length,
                     itemBuilder: (_, i) {
-                      final m = g.chat[i];
+                      final m = posts[i];
                       final mine = identical(m.who, S.me);
                       final av = whoAvatar(m.who, radius: 14);
                       final bubble = Flexible(
@@ -7224,7 +7794,7 @@ class _GroupChatTabState extends State<GroupChatTab> {
               padding: const EdgeInsets.all(8),
               child: gCanChat(g)
                   ? Row(children: [
-                      Expanded(child: TextField(controller: c, onSubmitted: (_) => send(), decoration: const InputDecoration(hintText: 'Message the group…'))),
+                      Expanded(child: TextField(controller: c, onSubmitted: (_) => send(), decoration: InputDecoration(hintText: widget.hint))),
                       const SizedBox(width: 8),
                       IconButton.filled(onPressed: send, icon: const Icon(Icons.send)),
                     ])
@@ -7302,9 +7872,54 @@ class _GroupNewsTabState extends State<GroupNewsTab> {
   }
 }
 
-class GroupMembersTab extends StatelessWidget {
+class GroupMembersTab extends StatefulWidget {
   final Group g;
   const GroupMembersTab(this.g, {super.key});
+  @override
+  State<GroupMembersTab> createState() => _GroupMembersTabState();
+}
+
+class _GroupMembersTabState extends State<GroupMembersTab> {
+  Group get g => widget.g;
+  final q = TextEditingController();
+  String fLabel = 'Any';
+
+  void assignLabels(BuildContext context, GMember m) {
+    if (g.labels.isEmpty) {
+      toast('Add labels in the Squad sheet tab first');
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (d) => StatefulBuilder(
+        builder: (d, set) => AlertDialog(
+          backgroundColor: kCard,
+          title: Text('Labels for ${m.name}'),
+          content: SizedBox(
+            width: 380,
+            child: Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final l in g.labels)
+                FilterChip(
+                  avatar: CircleAvatar(backgroundColor: l.c, radius: 6),
+                  label: Text(l.name),
+                  selected: m.labels.contains(l.id),
+                  onSelected: (v) {
+                    if (v) {
+                      m.labels.add(l.id);
+                    } else {
+                      m.labels.remove(l.id);
+                    }
+                    set(() {});
+                    S.update();
+                  },
+                ),
+            ]),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(d), child: const Text('Done'))],
+        ),
+      ),
+    );
+  }
 
   String perms(GMember m) {
     final l = [
@@ -7390,6 +8005,11 @@ class GroupMembersTab extends StatelessWidget {
                 title: Text(p.tag),
                 subtitle: Text(p.games.first, maxLines: 1, overflow: TextOverflow.ellipsis),
                 onTap: () {
+                  if (g.isFull) {
+                    Navigator.pop(c);
+                    toast('${g.name} is full. Raise the member limit first.');
+                    return;
+                  }
                   g.members.add(GMember(p));
                   S.update();
                   Navigator.pop(c);
@@ -7406,6 +8026,12 @@ class GroupMembersTab extends StatelessWidget {
     final owner = gIsOwner(g);
     final self = identical(m.who, S.me);
     final items = <PopupMenuEntry<String>>[
+      if (gCanManage(g) && m.role != 'owner') ...[
+        const PopupMenuItem(value: 'labels', child: Text('Assign labels')),
+        PopupMenuItem(value: 'mute', child: Text(m.canChat ? 'Mute in chat' : 'Unmute')),
+      ],
+      if (owner && g.isCommunity && m.role == 'member') PopupMenuItem(value: 'mod', child: Text(m.mod ? 'Remove moderator' : 'Make moderator')),
+      if (!self && m.role != 'owner' && g.isCommunity && (owner || (gCanManage(g) && m.role == 'member'))) const PopupMenuItem(value: 'ban', child: Text('Ban from community')),
       if (owner && m.role != 'owner') ...[
         const PopupMenuItem(value: 'perms', child: Text('Edit permissions')),
         PopupMenuItem(value: 'role', child: Text(m.role == 'admin' ? 'Demote to member' : 'Promote to admin')),
@@ -7417,7 +8043,21 @@ class GroupMembersTab extends StatelessWidget {
       tooltip: 'Member options',
       itemBuilder: (_) => items,
       onSelected: (v) {
-        if (v == 'perms') {
+        if (v == 'labels') {
+          assignLabels(context, m);
+        } else if (v == 'mute') {
+          m.canChat = !m.canChat;
+          S.update();
+          toast(m.canChat ? '${m.name} was unmuted' : '${m.name} was muted');
+        } else if (v == 'mod') {
+          m.mod = !m.mod;
+          S.update();
+        } else if (v == 'ban') {
+          g.members.remove(m);
+          g.banned.add(m.who);
+          S.update();
+          toast('${m.name} was banned');
+        } else if (v == 'perms') {
           editPerms(context, m);
         } else if (v == 'role') {
           final up = m.role == 'member';
@@ -7442,7 +8082,11 @@ class GroupMembersTab extends StatelessWidget {
     }
     final canManage = gCanManage(g);
     const order = {'owner': 0, 'admin': 1, 'member': 2};
-    final sorted = [...g.members]..sort((a, b) => order[a.role]!.compareTo(order[b.role]!));
+    final needle = q.text.trim().toLowerCase();
+    final sorted = [
+      for (final m in g.members)
+        if ((needle.isEmpty || m.name.toLowerCase().contains(needle)) && (fLabel == 'Any' || m.labels.any((id) => labelOf(g, id)?.name == fLabel))) m,
+    ]..sort((a, b) => order[a.role]!.compareTo(order[b.role]!));
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 760),
@@ -7468,17 +8112,33 @@ class GroupMembersTab extends StatelessWidget {
                   ),
               ]),
             ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(controller: q, onChanged: (_) => setState(() {}), decoration: const InputDecoration(hintText: 'Search members…', prefixIcon: Icon(Icons.search))),
+              if (gLabelsVisible(g) && g.labels.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, runSpacing: 4, children: [
+                  ChoiceChip(label: const Text('All'), selected: fLabel == 'Any', onSelected: (_) => setState(() => fLabel = 'Any')),
+                  for (final l in g.labels) ChoiceChip(label: Text(l.name), selected: fLabel == l.name, onSelected: (_) => setState(() => fLabel = l.name)),
+                ]),
+              ],
+            ]),
+          ),
           Sec(
-            'Members (${g.members.length})',
+            'Members (${sorted.length}${sorted.length == g.members.length ? '' : ' of ${g.members.length}'})',
             Column(children: [
               for (final m in sorted)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: whoAvatar(m.who, radius: 20),
                   title: Text('${m.name}${identical(m.who, S.me) ? ' (you)' : ''}'),
-                  subtitle: Text(perms(m), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    if (gLabelsVisible(g) && m.labels.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 4), child: labelTags(g, m)),
+                    Text(perms(m), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  ]),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                    infoChip(m.role == 'owner' ? 'Owner' : (m.role == 'admin' ? 'Admin' : 'Member'), icon: m.role == 'member' ? null : Icons.shield_outlined, color: m.role == 'member' ? null : kAccent),
+                    infoChip(m.role == 'owner' ? 'Owner' : (m.role == 'admin' ? 'Admin' : (m.mod ? 'Moderator' : 'Member')), icon: m.role == 'member' ? null : Icons.shield_outlined, color: m.role == 'member' ? null : kAccent),
                     menu(context, m),
                   ]),
                 ),
@@ -7554,7 +8214,8 @@ class _GameMultiPickState extends State<GameMultiPick> {
 }
 
 class CreateGroupScreen extends StatefulWidget {
-  const CreateGroupScreen({super.key});
+  final bool community;
+  const CreateGroupScreen({super.key, this.community = false});
   @override
   State<CreateGroupScreen> createState() => _CreateGroupState();
 }
@@ -7565,22 +8226,31 @@ class _CreateGroupState extends State<CreateGroupScreen> {
   bool isPublic = true;
   final games = <String>[];
   String plat = 'Any', region = 'Any';
-  final show = <String, bool>{'Description': true, 'Games': true, 'Members': true, 'Announcements': true};
+  final show = <String, bool>{'Description': true, 'Games': true, 'Members': true, 'Announcements': true, 'Labels': true, 'Squad sheet': true};
+  final limit = TextEditingController(), rules = TextEditingController();
+  String template = 'Start blank';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.community) show.addAll({'Rules': true, 'Events': true});
+  }
 
   void create() {
     if (!form.currentState!.validate()) return;
     if (games.isEmpty) {
-      toast('Pick at least one game for your group');
+      toast('Pick at least one game for your ${widget.community ? 'community' : 'group'}');
       return;
     }
-    final g = S.createGroup(name.text.trim(), desc.text.trim(), isPublic, List.of(games), plat, region, show);
-    toast('Group created');
+    final g = S.createGroup(name.text.trim(), desc.text.trim(), isPublic, List.of(games), plat, region, show,
+        community: widget.community, max: int.tryParse(limit.text.trim()), template: template, rules: rules.text.trim());
+    toast(widget.community ? 'Community created' : 'Group created');
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => GroupScreen(g)));
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Create group'), bottom: const PreferredSize(preferredSize: Size.fromHeight(3), child: GradientBar())),
+        appBar: AppBar(title: Text(widget.community ? 'Create community' : 'Create group'), bottom: const PreferredSize(preferredSize: Size.fromHeight(3), child: GradientBar())),
         body: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 640),
@@ -7589,7 +8259,7 @@ class _CreateGroupState extends State<CreateGroupScreen> {
               child: Form(
                 key: form,
                 child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                  tf(name, 'Group name', icon: Icons.groups_outlined, max: 40, v: (v) => (v == null || v.trim().length < 3) ? 'At least 3 characters' : null),
+                  tf(name, widget.community ? 'Community name' : 'Group name', icon: widget.community ? Icons.diversity_3 : Icons.groups_outlined, max: 40, v: (v) => (v == null || v.trim().length < 3) ? 'At least 3 characters' : null),
                   tf(desc, 'Description', lines: 3, max: 200),
                   const Text('Visibility', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
@@ -7612,11 +8282,21 @@ class _CreateGroupState extends State<CreateGroupScreen> {
                   const SizedBox(height: 14),
                   PickField(label: 'Region', value: region, options: const ['Any', ...kRegions], onChanged: (v) => setState(() => region = v)),
                   const SizedBox(height: 20),
+                  tf(limit, 'Member limit (leave empty for no limit)', type: TextInputType.number, v: (v) {
+                    if (v == null || v.trim().isEmpty) return null;
+                    final n = int.tryParse(v.trim());
+                    return n == null || n < 2 ? 'Enter a number of 2 or more' : null;
+                  }),
+                  PickField(label: 'Member labels (positions or roles)', value: template, options: kLabelTemplates.keys.toList(), onChanged: (v) => setState(() => template = v)),
+                  const SizedBox(height: 6),
+                  const Text('You can add, rename and assign labels any time after creating.', style: TextStyle(color: kMuted, fontSize: 12.5)),
+                  const SizedBox(height: 14),
+                  if (widget.community) tf(rules, 'Community rules (members accept these before chatting)', lines: 4, max: 600),
                   const Text('What non-members can see', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   for (final k in show.keys.toList())
                     SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(k), value: show[k]!, onChanged: (v) => setState(() => show[k] = v)),
                   const SizedBox(height: 16),
-                  FilledButton.icon(style: bigBtn(), onPressed: create, icon: const Icon(Icons.check), label: const Text('Create group')),
+                  FilledButton.icon(style: bigBtn(), onPressed: create, icon: const Icon(Icons.check), label: Text(widget.community ? 'Create community' : 'Create group')),
                 ]),
               ),
             ),
