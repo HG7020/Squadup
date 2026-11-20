@@ -200,6 +200,8 @@ class Profile {
   String playStyle = 'Casual', lookingFor = 'Regular squad', languages = 'English', pronouns = '', askMe = '', discord = '', twitch = '';
   bool hasMic = true;
   int theme = 0;
+  final Set<String> gamerTypes = {}, wants = {}, avoids = {}; // what you are, what you want, who to hide
+  bool showFiltered = false;
   DateTime? dob;
   List<String> games = [];
   Map<String, GameInfo> gameInfo = {};
@@ -741,7 +743,7 @@ String regionOf(String c) {
   return 'Europe';
 }
 
-/// Match score 0-100: shared games 35, frequency 20, age 15, availability 15, region 10, rank closeness 5.
+/// Match score 0-100: shared games 30, what you want in teammates 20, frequency 15, age 10, availability 10, region 10, rank closeness 5.
 int matchScore(Profile me, Player p) {
   final shared = [
     for (var i = 0; i < p.games.length; i++)
@@ -768,12 +770,12 @@ int matchScore(Profile me, Player p) {
     rN++;
   }
   final rS = rN == 0 ? 0.5 : rSum / rN;
-  return (gScore * 35 + f * 20 + ageS * 15 + regS * 10 + avS * 15 + rS * 5).round().clamp(0, 100).toInt();
+  return (gScore * 30 + f * 15 + ageS * 10 + regS * 10 + avS * 10 + rS * 5 + tagScore(me, p) * 20).round().clamp(0, 100).toInt();
 }
 
 List<(Player, int)> ranked(Iterable<Player> ps) {
   final me = S.me;
-  final l = <(Player, int)>[for (final p in ps) if (!S.blocked.contains(p.tag)) (p, me == null ? 0 : matchScore(me, p))];
+  final l = <(Player, int)>[for (final p in ps) if (!S.blocked.contains(p.tag) && (me == null || !hiddenByPrefs(me, p))) (p, me == null ? 0 : matchScore(me, p))];
   l.sort((a, b) => b.$2.compareTo(a.$2));
   return l;
 }
@@ -2096,7 +2098,19 @@ class _WelcomeFlowState extends State<WelcomeFlow> {
     (Icons.celebration, 'Welcome!', 'Your profile is ready. Your games, accounts and privacy settings are all saved.'),
     (Icons.search, 'Find your squad', 'We rank players by how well they match your games, play style, age, region and availability.'),
     (Icons.chat_bubble_outline, 'Chat and play', 'Send squad invites, chat with teammates and jump into a match.'),
+    (Icons.tune, 'Your play style', 'Pick what fits you.'),
   ];
+
+  Widget _prefsPage() => SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Your play style', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text('Tell us what you are into so we can match you. You can skip this and change it any time on your profile.', style: TextStyle(color: kMuted)),
+          const SizedBox(height: 16),
+          PrefsEditor(p: S.me!, onChanged: () => setState(() {})),
+        ]),
+      );
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -2112,7 +2126,9 @@ class _WelcomeFlowState extends State<WelcomeFlow> {
                     onPageChanged: (v) => setState(() => i = v),
                     children: [
                       for (var n = 0; n < pages.length; n++)
-                        Padding(
+                        n == 3 && S.me != null
+                            ? _prefsPage()
+                            : Padding(
                           padding: const EdgeInsets.all(32),
                           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                             n == 0 && S.me != null ? meAvatar(radius: 48) : Icon(pages[n].$1, size: 96, color: kAccent),
@@ -5004,15 +5020,6 @@ class StyleEditor extends StatelessWidget {
   const StyleEditor({super.key, required this.p, required this.onChanged});
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        PickField(label: 'Play style', value: p.playStyle, options: kPlayStyles, onChanged: (v) {
-          p.playStyle = v;
-          onChanged();
-        }),
-        const SizedBox(height: 12),
-        PickField(label: 'Looking for', value: p.lookingFor, options: kLookingFor, onChanged: (v) {
-          p.lookingFor = v;
-          onChanged();
-        }),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('I have a mic'),
@@ -5162,6 +5169,266 @@ extension MoreNoticeDemos on AppState {
 void resetAchievementWatch() {
   _achReady = false;
   _unlockedAch.clear();
+}
+
+// ───────────────────────── Gamer types, teammate wishes & hidden player types ─────────────────────────
+const kGamerTypes = ['Competitive', 'Casual', 'Social / friends', 'Story & co-op', 'Streamer / creator', 'Team leader', 'Beginner', 'Returning player'];
+const _wMic = 'Teammates with a mic';
+const _wRanked = 'Ranked / competitive';
+const _wCasual = 'Casual, no pressure';
+const _wFriends = 'Friends long term';
+const _wDuo = 'A duo partner';
+const _wSquad = 'A full squad or clan';
+const _wSkill = 'Similar skill level';
+const _wAge = 'Similar age group';
+const _wLang = 'Same language';
+const _wChill = 'Chill, no toxicity';
+const _wTimes = 'Plays at my times';
+const kWants = [_wMic, _wRanked, _wCasual, _wFriends, _wDuo, _wSquad, _wSkill, _wAge, _wLang, _wChill, _wTimes];
+const _aNoMic = 'Players without a mic';
+const _aMinor = 'Players under 18';
+const _aLang = "Players who don't share my language";
+const _aLower = 'Much lower skill than me';
+const _aHigher = 'Much higher skill than me';
+const _aTimes = 'Players who play at other times';
+const _aCasual = 'Casual-only players';
+const _aComp = 'Competitive / ranked grinders';
+const kAvoids = [_aNoMic, _aMinor, _aLang, _aLower, _aHigher, _aTimes, _aCasual, _aComp];
+const _kWantShort = {
+  _wMic: 'Has a mic',
+  _wRanked: 'Competitive',
+  _wCasual: 'Casual',
+  _wFriends: 'Social',
+  _wDuo: 'Wants a duo',
+  _wSquad: 'Wants a squad',
+  _wSkill: 'Similar skill',
+  _wAge: 'Similar age',
+  _wLang: 'Same language',
+  _wChill: 'Reliable and chill',
+  _wTimes: 'Same play times',
+};
+
+extension PlayerTags on Player {
+  Set<String> get gamerTypes {
+    final h = _hash('types$tag');
+    final s = <String>{};
+    switch (playStyle) {
+      case 'Competitive':
+      case 'Grinder':
+        s.add(kGamerTypes[0]);
+      case 'Casual':
+        s.add(kGamerTypes[1]);
+      default:
+        s.add(kGamerTypes[2]);
+    }
+    if (role == 'IGL' || role == 'Strategist' || role == 'Leader / IGL') s.add(kGamerTypes[5]);
+    if (rank == 'Beginner') s.add(kGamerTypes[6]);
+    if (h % 7 == 0) s.add(kGamerTypes[4]);
+    if (h % 6 == 0) s.add(kGamerTypes[3]);
+    if (h % 11 == 0) s.add(kGamerTypes[7]);
+    return s;
+  }
+
+  Set<String> get wants {
+    final h = _hash('wants$tag');
+    return {kWants[h % kWants.length], kWants[(h ~/ 3 + 2) % kWants.length], if (hasMic && h % 2 == 0) _wMic};
+  }
+}
+
+bool _langOverlap(Profile me, Player p) {
+  final mine = me.languages.split(',').map((e) => e.trim().toLowerCase()).where((e) => e.isNotEmpty).toSet();
+  if (mine.isEmpty) return true;
+  return p.languages.any((l) => mine.contains(l.toLowerCase()));
+}
+
+/// Average rank gap (their rank minus yours, 0-1 of the ladder) over shared ranked games; null when unknown.
+double? _skillGap(Profile me, Player p) {
+  var sum = 0.0;
+  var n = 0;
+  for (final g in p.games) {
+    final l = ladderOf(g);
+    final mine = me.gameRank[g];
+    final theirs = playerRank(p, g);
+    if (!me.games.contains(g) || l == null || l.length < 2 || mine == null || mine == kUnranked || theirs == null || theirs == kUnranked) continue;
+    sum += (l.indexOf(theirs) - l.indexOf(mine)) / (l.length - 1);
+    n++;
+  }
+  return n == 0 ? null : sum / n;
+}
+
+bool _sameTimes(Profile me, Player p) => me.avail == p.avail || me.avail == 'Anytime' || p.avail == 'Anytime';
+
+bool wantMet(Profile me, Player p, String w) {
+  switch (w) {
+    case _wMic:
+      return p.hasMic;
+    case _wRanked:
+      return p.gamerTypes.contains(kGamerTypes[0]);
+    case _wCasual:
+      return p.gamerTypes.contains(kGamerTypes[1]);
+    case _wFriends:
+      return p.gamerTypes.contains(kGamerTypes[2]);
+    case _wDuo:
+      return p.lookingFor == 'Duo partner';
+    case _wSquad:
+      return p.lookingFor == 'Regular squad' || p.lookingFor == 'Clan / team';
+    case _wSkill:
+      {
+        final g = _skillGap(me, p);
+        return g != null && g.abs() <= 0.25;
+      }
+    case _wAge:
+      return me.dob != null && (ageOf(me.dob!) - p.age).abs() <= 5;
+    case _wLang:
+      return _langOverlap(me, p);
+    case _wChill:
+      return p.reliability >= 85;
+    case _wTimes:
+      return _sameTimes(me, p);
+    default:
+      return false;
+  }
+}
+
+bool avoidHit(Profile me, Player p, String a) {
+  switch (a) {
+    case _aNoMic:
+      return !p.hasMic;
+    case _aMinor:
+      return p.age < 18;
+    case _aLang:
+      return !_langOverlap(me, p);
+    case _aLower:
+      {
+        final g = _skillGap(me, p);
+        return g != null && g < -0.3;
+      }
+    case _aHigher:
+      {
+        final g = _skillGap(me, p);
+        return g != null && g > 0.3;
+      }
+    case _aTimes:
+      return !_sameTimes(me, p);
+    case _aCasual:
+      return p.gamerTypes.contains(kGamerTypes[1]) && !p.gamerTypes.contains(kGamerTypes[0]);
+    case _aComp:
+      return p.gamerTypes.contains(kGamerTypes[0]);
+    default:
+      return false;
+  }
+}
+
+/// True when the player is hidden by the types of players you chose to hide.
+bool hiddenByPrefs(Profile me, Player p) => !me.showFiltered && me.avoids.any((a) => avoidHit(me, p, a));
+int hiddenCount(Profile me) => me.avoids.isEmpty ? 0 : kPlayers.where((p) => !S.blocked.contains(p.tag) && me.avoids.any((a) => avoidHit(me, p, a))).length;
+
+/// 0-1: how well the player fits what you said you want. Neutral (0.5) when you have not chosen anything.
+double tagScore(Profile me, Player p) {
+  var sum = 0.0;
+  var n = 0;
+  if (me.wants.isNotEmpty) {
+    sum += me.wants.where((w) => wantMet(me, p, w)).length / me.wants.length;
+    n++;
+  }
+  if (me.gamerTypes.isNotEmpty) {
+    sum += me.gamerTypes.intersection(p.gamerTypes).isEmpty ? 0.0 : 1.0;
+    n++;
+  }
+  return n == 0 ? 0.5 : sum / n;
+}
+
+List<String> whyMatch(Profile me, Player p) {
+  final r = <String>[
+    for (final w in me.wants)
+      if (wantMet(me, p, w)) _kWantShort[w] ?? w,
+    for (final t in me.gamerTypes.intersection(p.gamerTypes)) 'Both ${t.split(RegExp(r'[ ,/]')).first.toLowerCase()}',
+  ];
+  return r.take(4).toList();
+}
+
+class TagPicker extends StatelessWidget {
+  final String title, hint;
+  final List<String> options;
+  final Set<String> selected;
+  final VoidCallback onChanged;
+  const TagPicker({super.key, required this.title, required this.hint, required this.options, required this.selected, required this.onChanged});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        const SizedBox(height: 2),
+        Text(hint, style: const TextStyle(color: kMuted, fontSize: 12.5)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final o in options)
+            FilterChip(
+              label: Text(o),
+              selected: selected.contains(o),
+              onSelected: (v) {
+                if (v) {
+                  selected.add(o);
+                } else {
+                  selected.remove(o);
+                }
+                onChanged();
+              },
+            ),
+        ]),
+      ]);
+}
+
+/// Gamer type, what you want in teammates, and the types of players you want hidden.
+class PrefsEditor extends StatelessWidget {
+  final Profile p;
+  final VoidCallback onChanged;
+  const PrefsEditor({super.key, required this.p, required this.onChanged});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TagPicker(title: 'What type of gamer are you?', hint: 'Pick all that fit.', options: kGamerTypes, selected: p.gamerTypes, onChanged: onChanged),
+        const SizedBox(height: 18),
+        TagPicker(title: 'What teammates are you looking for?', hint: 'Players who fit these get a higher match score.', options: kWants, selected: p.wants, onChanged: onChanged),
+        const SizedBox(height: 18),
+        TagPicker(
+          title: 'Hide these types of players',
+          hint: 'They will not appear in Find Team or your suggestions. You can still turn them back on.',
+          options: kAvoids,
+          selected: p.avoids,
+          onChanged: onChanged,
+        ),
+        if (p.avoids.isNotEmpty)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Show hidden players anyway'),
+            subtitle: Text('${hiddenCount(p)} player${hiddenCount(p) == 1 ? '' : 's'} currently hidden'),
+            value: p.showFiltered,
+            onChanged: (v) {
+              p.showFiltered = v;
+              onChanged();
+            },
+          ),
+      ]);
+}
+
+List<Widget> playerTagSecs(Player p) {
+  final me = S.me;
+  if (!canSee(p, 'Play style & comms')) return [Sec('Gamer type & teammates', lockedRow('Not public'))];
+  final why = me == null ? <String>[] : whyMatch(me, p);
+  return [
+    if (why.isNotEmpty)
+      Sec('Why you match', Wrap(spacing: 8, runSpacing: 8, children: [for (final w in why) infoChip(w, icon: Icons.check_circle_outline, color: kOnline)])),
+    Sec(
+      'Gamer type',
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        for (final t in p.gamerTypes) infoChip(t, icon: me != null && me.gamerTypes.contains(t) ? Icons.check : Icons.sports_esports_outlined, color: me != null && me.gamerTypes.contains(t) ? kOnline : null),
+      ]),
+    ),
+    Sec(
+      'Looking for in teammates',
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        for (final w in p.wants) infoChip(w, icon: me != null && me.wants.contains(w) ? Icons.check : Icons.person_search_outlined, color: me != null && me.wants.contains(w) ? kOnline : null),
+      ]),
+    ),
+  ];
 }
 
 // ───────────────────────── Home shell ─────────────────────────
@@ -5516,7 +5783,8 @@ class ProfileTab extends StatelessWidget {
                   ),
                 Sec('My games', GamesEditor(p: p, onChanged: S.update)),
                 Sec('My ranks & roles', RankEditor(p: p, onChanged: S.update)),
-                Sec('Play style & contact', StyleEditor(p: p, onChanged: S.update)),
+                Sec('Gamer type & teammates', PrefsEditor(p: p, onChanged: S.update)),
+                Sec('Mic, languages & contact', StyleEditor(p: p, onChanged: S.update)),
                 Sec(
                   'My groups',
                   Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -5695,7 +5963,7 @@ class FindTab extends StatefulWidget {
 }
 
 class _FindTabState extends State<FindTab> {
-  String fGame = 'Any', fPlat = 'Any', fRank = 'Any', fAvail = 'Any', fRegion = 'Any', fMinRank = 'Any';
+  String fGame = 'Any', fPlat = 'Any', fRank = 'Any', fAvail = 'Any', fRegion = 'Any', fMinRank = 'Any', fType = 'Any', fMic = 'Any';
   RangeValues fAge = const RangeValues(13, 60);
   final q = TextEditingController();
 
@@ -5711,6 +5979,9 @@ class _FindTabState extends State<FindTab> {
             (fPlat == 'Any' || p.platform == fPlat) &&
             (fRank == 'Any' || p.rank == fRank) &&
             (fMinRank == 'Any' || fGame == 'Any' || rankIndex(fGame, playerRank(p, fGame)) >= rankIndex(fGame, fMinRank)) &&
+            (fType == 'Any' || p.gamerTypes.contains(fType)) &&
+            (fMic == 'Any' || (fMic == 'Has a mic') == p.hasMic) &&
+            (S.me == null || !hiddenByPrefs(S.me!, p)) &&
             (fAvail == 'Any' || p.avail == fAvail) &&
             (fRegion == 'Any' || p.region == fRegion) &&
             p.age >= fAge.start.round() &&
@@ -5763,17 +6034,30 @@ class _FindTabState extends State<FindTab> {
                             filter('Platform', fPlat, kPlatforms, (x) => fPlat = x),
                             filter('Rank / skill', fRank, kRanks, (x) => fRank = x),
                             if (fGame != 'Any' && ladderOf(fGame) != null) filter('Min. rank in $fGame', fMinRank, ladderOf(fGame)!, (x) => fMinRank = x),
+                            filter('Gamer type', fType, kGamerTypes, (x) => fType = x),
+                            filter('Microphone', fMic, const ['Has a mic', 'No mic'], (x) => fMic = x),
                             filter('Availability', fAvail, kAvail, (x) => fAvail = x),
                             filter('Region', fRegion, kRegions, (x) => fRegion = x),
                           ]),
                           const SizedBox(height: 12),
+                          if (S.me != null && S.me!.avoids.isNotEmpty)
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('Show players my preferences hide'),
+                              subtitle: Text('${hiddenCount(S.me!)} hidden'),
+                              value: S.me!.showFiltered,
+                              onChanged: (v) {
+                                S.me!.showFiltered = v;
+                                S.update();
+                              },
+                            ),
                           Text('Age range: ${fAge.start.round()} – ${fAge.end.round()}${fAge.end.round() >= 60 ? '+' : ''}'),
                           RangeSlider(values: fAge, min: 13, max: 60, divisions: 47, onChanged: (v) => setState(() => fAge = v)),
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton.icon(
                               onPressed: () => setState(() {
-                                fGame = fPlat = fRank = fAvail = fRegion = fMinRank = 'Any';
+                                fGame = fPlat = fRank = fAvail = fRegion = fMinRank = fType = fMic = 'Any';
                                 fAge = const RangeValues(13, 60);
                                 q.clear();
                               }),
@@ -5955,6 +6239,14 @@ class PlayerCard extends StatelessWidget {
                 if (showStyle) chip(p.role, Icons.shield_outlined),
                 if (showStyle) chip(p.hasMic ? 'Mic' : 'No mic', p.hasMic ? Icons.mic : Icons.mic_off),
               ]),
+              if (showStyle && p.gamerTypes.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(spacing: 6, runSpacing: 6, children: [for (final t in p.gamerTypes.take(3)) chip(t, Icons.sports_esports_outlined)]),
+              ],
+              if (S.me != null && whyMatch(S.me!, p).isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Why you match: ${whyMatch(S.me!, p).join(' · ')}', style: const TextStyle(color: kAccentLight, fontSize: 12)),
+              ],
               if (showAct) ...[
                 const SizedBox(height: 8),
                 Text('${p.lastActive} · their time ${p.localTime} · ${p.reliability}% reliable', style: const TextStyle(color: kMuted, fontSize: 12)),
@@ -6461,6 +6753,7 @@ class PlayerProfileScreen extends StatelessWidget {
                           ])
                         : locked('Games are not public'),
                   ),
+                  ...playerTagSecs(p),
                   ...playerExtraSecs(context, p),
                   playerStatsSec(p),
                   commendSec(p),
