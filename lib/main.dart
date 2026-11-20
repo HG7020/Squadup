@@ -184,7 +184,22 @@ class Profile {
   final Set<String> followed = {}; // games the user follows
   bool emailVerified = false, showBuyLinks = true;
   final Set<String> hideStats = {}; // games whose stats the user hides
-  final Map<String, bool> notif = {'Messages': true, 'Friend requests': true, 'Group activity': true, 'News & releases': true, 'Event reminders': true};
+  final Map<String, bool> notif = {
+    'Messages': true,
+    'Friend requests': true,
+    'Group activity': true,
+    'News & releases': true,
+    'Event reminders': true,
+    'Commendations': true,
+    'LFG & matches': true,
+    'Achievements & ranks': true,
+    'Safety & support': true,
+  };
+  // Ranks, roles and play style (shown on your public profile, subject to Privacy)
+  final Map<String, String> gameRank = {}, gameRole = {}, gamePicks = {};
+  String playStyle = 'Casual', lookingFor = 'Regular squad', languages = 'English', pronouns = '', askMe = '', discord = '', twitch = '';
+  bool hasMic = true;
+  int theme = 0;
   DateTime? dob;
   List<String> games = [];
   Map<String, GameInfo> gameInfo = {};
@@ -202,6 +217,10 @@ class Profile {
     'Age / DOB': 'Friends Only',
     'Email': 'Private',
     'Game stats': 'Public',
+    'Rank': 'Public',
+    'Play style & comms': 'Public',
+    'Activity & reliability': 'Public',
+    'Social links': 'Friends Only',
   };
   final Map<String, bool> linkedVisibility = {
     'PlayStation / PSN': true,
@@ -442,7 +461,10 @@ class AppState extends ChangeNotifier {
   List<Group> get myPendingJoins => me == null ? [] : groups.where((g) => g.requests.any((r) => identical(r, me))).toList();
   int get notificationCount => totalUnread + incomingFriendReqs.length + pendingApprovals;
 
-  void touch() => notifyListeners();
+  void touch() {
+    notifyListeners();
+    checkAchievements();
+  }
 
   void acceptFriend(Player p) {
     incomingFriendReqs.remove(p);
@@ -556,7 +578,10 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  void update() => notifyListeners();
+  void update() {
+    notifyListeners();
+    checkAchievements();
+  }
   Profile? find(String id) {
     final i = id.trim().toLowerCase();
     for (final u in users) {
@@ -617,6 +642,7 @@ class AppState extends ChangeNotifier {
       }
       notifyListeners();
       pushNotice('Friend requests', Icons.how_to_reg, 'Squad request accepted', '${p.tag} accepted your invite. Say hi!', chat: chatWith(p));
+      checkAchievements();
     });
   }
 
@@ -656,6 +682,7 @@ void openGroup(BuildContext c, Group g) => Navigator.push(c, MaterialPageRoute(b
 void logout(BuildContext c) {
   squadTheme.value = ThemeMode.dark; // login / sign-up are always dark
   S.me = null;
+  resetAchievementWatch();
   goTo(c, const WelcomeScreen());
 }
 
@@ -714,7 +741,7 @@ String regionOf(String c) {
   return 'Europe';
 }
 
-/// Match score 0-100: shared games 40, frequency 20, age 15, availability 15, region 10.
+/// Match score 0-100: shared games 35, frequency 20, age 15, availability 15, region 10, rank closeness 5.
 int matchScore(Profile me, Player p) {
   final shared = [
     for (var i = 0; i < p.games.length; i++)
@@ -730,7 +757,18 @@ int matchScore(Profile me, Player p) {
   final ageS = me.dob == null ? 0.5 : (1 - (ageOf(me.dob!) - p.age).abs() / 15).clamp(0.0, 1.0);
   final regS = regionOf(me.country) == p.region ? 1.0 : 0.0;
   final avS = me.avail == p.avail ? 1.0 : (me.avail == 'Anytime' || p.avail == 'Anytime' ? 0.7 : 0.0);
-  return (gScore * 40 + f * 20 + ageS * 15 + regS * 10 + avS * 15).round().clamp(0, 100).toInt();
+  var rSum = 0.0, rN = 0;
+  for (final i in shared) {
+    final g = p.games[i];
+    final l = ladderOf(g);
+    final mine = me.gameRank[g];
+    final theirs = playerRank(p, g);
+    if (l == null || mine == null || mine == kUnranked || theirs == null || theirs == kUnranked) continue;
+    rSum += 1 - ((l.indexOf(mine) - l.indexOf(theirs)).abs() / (l.length - 1)).clamp(0.0, 1.0).toDouble();
+    rN++;
+  }
+  final rS = rN == 0 ? 0.5 : rSum / rN;
+  return (gScore * 35 + f * 20 + ageS * 15 + regS * 10 + avS * 15 + rS * 5).round().clamp(0, 100).toInt();
 }
 
 List<(Player, int)> ranked(Iterable<Player> ps) {
@@ -3371,6 +3409,7 @@ extension CommendActions on AppState {
       myCommended.add(k);
       commends[k] = (commends[k] ?? 0) + 1;
       toast('You commended ${p.tag}: $r');
+      Timer(const Duration(seconds: 9), () => pushNotice('Commendations', Icons.thumb_up_alt, '${p.tag} commended you back', 'For: $r', color: Colors.pinkAccent, tab: 2));
     }
     touch();
   }
@@ -3459,6 +3498,7 @@ extension LfgActions on AppState {
     lfg.insert(0, LfgPost(u, game, mode, need, text, voice: voice));
     touch();
     toast('Your looking-for-group post is live');
+    Timer(const Duration(seconds: 8), simulateLfgReply);
   }
 
   void joinLfg(LfgPost l) {
@@ -3472,13 +3512,22 @@ extension LfgActions on AppState {
     }
     touch();
     toast('Request sent to ${whoName(l.who)}');
+    if (w is Player) {
+      Timer(const Duration(seconds: 7), () => pushNotice('LFG & matches', Icons.sports_esports, '${w.tag} accepted you', 'You are in for the ${l.game} session.', color: Colors.tealAccent, chat: chatWith(w)));
+    }
   }
 
   void toggleRsvp(SquadEvent e) {
     final u = me;
     if (u == null) return;
-    if (!e.going.remove(u)) e.going.add(u);
+    final joined = !e.going.remove(u);
+    if (joined) e.going.add(u);
     touch();
+    if (joined) {
+      Timer(const Duration(seconds: 15), () {
+        if (e.going.contains(u)) pushNotice('Event reminders', Icons.event, 'Event reminder', '${e.title} · ${e.game} · ${fmtWhen(e.when)}', color: Colors.orangeAccent, tab: 2);
+      });
+    }
   }
 
   void createEvent(String title, String game, DateTime when) {
@@ -3821,9 +3870,9 @@ List<Widget> settingsMore(BuildContext context, Profile profile) {
         Align(
           alignment: Alignment.centerLeft,
           child: OutlinedButton.icon(
-            onPressed: () => pushNotice('Messages', Icons.notifications_active, 'Test notification', 'This is how notifications look. Tap to open the Dashboard.', tab: 2),
+            onPressed: S.demoNext,
             icon: const Icon(Icons.notifications_active_outlined),
-            label: const Text('Send a test notification'),
+            label: const Text('Send a test notification (changes each tap)'),
           ),
         ),
       ]),
@@ -3955,6 +4004,7 @@ extension FeedbackActions on AppState {
     final r = FeedbackReport('SU-${1001 + feedback.length}', category, severity, summary, steps, currentScreenName(), platformName(), me?.username ?? 'guest');
     feedback.insert(0, r);
     touch();
+    Timer(const Duration(seconds: 8), () => pushNotice('Safety & support', Icons.support_agent, 'Report received', 'Thanks! ${r.id} is now in review.', color: Colors.lightGreenAccent, tab: 6));
     return r;
   }
 }
@@ -4576,6 +4626,544 @@ extension NoticeDemos on AppState {
 }
 
 
+// ───────────────────────── Ranks, play style & extra profile info ─────────────────────────
+// Rank ladders per game. Names are written from memory, so check them against each game before launch.
+const _kLadderValorant = ['Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Ascendant', 'Immortal', 'Radiant'];
+const _kLadderCod = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Crimson', 'Iridescent', 'Top 250'];
+const _kLadderFc = [
+  'Division 10', 'Division 9', 'Division 8', 'Division 7', 'Division 6', 'Division 5', 'Division 4', 'Division 3', 'Division 2', 'Division 1', 'Elite Division',
+];
+const _kLadderGeneric = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Grandmaster'];
+
+const kRankLadders = <String, List<String>>{
+  'Marvel Rivals': ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Grandmaster', 'Celestial', 'Eternity', 'One Above All'],
+  'Valorant': _kLadderValorant,
+  'Apex Legends': ['Rookie', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Apex Predator'],
+  'League of Legends': ['Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Emerald', 'Diamond', 'Master', 'Grandmaster', 'Challenger'],
+  'Rocket League': ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Champion', 'Grand Champion', 'Supersonic Legend'],
+  'Counter-Strike 2': ['Silver', 'Gold Nova', 'Master Guardian', 'Legendary Eagle', 'Supreme', 'Global Elite'],
+  'Overwatch 2': ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Grandmaster', 'Champion'],
+  'Fortnite': ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Elite', 'Champion', 'Unreal'],
+  'Call of Duty: Warzone': _kLadderCod,
+  'Call of Duty: Modern Warfare 4': _kLadderCod,
+  'EA Sports FC 27': _kLadderFc,
+  'EA Sports FC 26': _kLadderFc,
+  'Halo Infinite': ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Onyx'],
+  'Street Fighter 6': ['Rookie', 'Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Legend'],
+  'Tekken 8': ['Beginner', 'Fighter', 'Warrior', 'Dragon', 'God of Destruction', 'Tekken King'],
+  'Destiny 2': _kLadderGeneric,
+  'Forza Horizon 5': _kLadderGeneric,
+  'F1 24': _kLadderGeneric,
+};
+
+const kUnranked = 'Unranked';
+const kPlayStyles = ['Casual', 'Competitive', 'Grinder', 'Social / chill'];
+const kLookingFor = ['Duo partner', 'Regular squad', 'Clan / team', 'Just for tonight'];
+const kLangs = ['English', 'Spanish', 'French', 'German', 'Portuguese', 'Japanese', 'Korean', 'Arabic'];
+const kRolePicks = ['Flexible', 'Tank', 'Support / healer', 'Damage', 'Strategist', 'Fragger', 'Sniper', 'Leader / IGL', 'Striker', 'Midfielder', 'Defender', 'Goalkeeper'];
+const kThemes = [Color(0xFF0070CC), Color(0xFF8E44AD), Color(0xFFE67E22), Color(0xFF16A085), Color(0xFFC0392B), Color(0xFFD4AC0D)];
+const _kAsk = [
+  'My best clutch moment',
+  'Why I main my favourite character',
+  'The meta right now',
+  'Tips for climbing ranked',
+  'My setup and settings',
+  'Co-op game recommendations',
+];
+const kFavPicks = <String, List<String>>{
+  'Marvel Rivals': ['Spider-Man', 'Luna Snow', 'Doctor Strange', 'Iron Man', 'Storm'],
+  'Valorant': ['Jett', 'Sage', 'Omen', 'Reyna', 'Sova'],
+  'Apex Legends': ['Wraith', 'Bloodhound', 'Lifeline', 'Octane', 'Pathfinder'],
+  'Overwatch 2': ['Tracer', 'Mercy', 'Reinhardt', 'Genji', 'Ana'],
+  'League of Legends': ['Ahri', 'Lee Sin', 'Thresh', 'Jinx', 'Yasuo'],
+  'Rocket League': ['Octane', 'Fennec', 'Dominus', 'Breakout'],
+  'Street Fighter 6': ['Ryu', 'Chun-Li', 'Luke', 'Kimberly', 'Ken'],
+  'Tekken 8': ['Jin', 'Kazuya', 'Paul', 'Nina', 'King'],
+};
+
+List<String>? ladderOf(String game) => kRankLadders[game];
+int _hash(String s) => s.codeUnits.fold<int>(7, (a, b) => (a * 31 + b) & 0x7fffffff);
+
+/// Demo rank for a mock player (null when the game has no ranked ladder).
+String? playerRank(Player p, String game) {
+  final l = ladderOf(game);
+  if (l == null) return null;
+  final h = _hash('${p.tag}|$game');
+  if (h % 9 == 0) return kUnranked;
+  final tier = kRanks.indexOf(p.rank);
+  final base = (l.length * (tier + 1) / 6).floor();
+  final idx = (base + h % 3 - 1).clamp(0, l.length - 1).toInt();
+  return l[idx];
+}
+
+int rankIndex(String game, String? r) {
+  final l = ladderOf(game);
+  if (l == null || r == null) return -1;
+  return l.indexOf(r);
+}
+
+Color rankColor(String game, String? r) {
+  final l = ladderOf(game);
+  final i = rankIndex(game, r);
+  if (l == null || i < 0) return kMuted;
+  const cols = [Color(0xFFB07A4A), Color(0xFFB0B7C3), Color(0xFFFFC53D), Color(0xFF3DDAD7), Color(0xFFB06CFF), Color(0xFFFF7A45)];
+  final f = l.length <= 1 ? 0.0 : i / (l.length - 1);
+  return cols[(f * 5).round()];
+}
+
+List<String> favPicks(String game, String seed) {
+  final l = kFavPicks[game];
+  if (l == null) return const [];
+  final h = _hash('$seed|$game');
+  return [for (var i = 0; i < 3; i++) l[(h + i * 2) % l.length]].toSet().toList();
+}
+
+class RankBadge extends StatelessWidget {
+  final String game;
+  final String? rank;
+  final bool linked, showGame;
+  const RankBadge(this.game, this.rank, {super.key, this.linked = false, this.showGame = false});
+  @override
+  Widget build(BuildContext context) {
+    final r = rank;
+    if (r == null) return const SizedBox.shrink();
+    final c = rankColor(game, r);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: c.withAlpha(36), border: Border.all(color: c.withAlpha(120)), borderRadius: BorderRadius.circular(8)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.military_tech, size: 14, color: c),
+        const SizedBox(width: 4),
+        Flexible(child: Text(showGame ? '$game · $r' : r, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
+        if (linked) ...[const SizedBox(width: 4), Icon(Icons.verified, size: 12, color: c)],
+      ]),
+    );
+  }
+}
+
+/// Extra (demo) profile details for the mock players, derived from the gamertag so they stay stable.
+extension PlayerExtras on Player {
+  int get _h => _hash(tag);
+  String get playStyle => kPlayStyles[_h % kPlayStyles.length];
+  String get lookingFor => kLookingFor[(_h ~/ 3) % kLookingFor.length];
+  bool get hasMic => _h % 5 != 0;
+  List<String> get languages => ['English', if (_h % 3 == 0) kLangs[1 + _h % 7]];
+  int get reliability => 72 + _h % 28;
+  int get weeklyHours => 4 + _h % 28;
+  int get utcOffset {
+    switch (region) {
+      case 'North America':
+        return -5;
+      case 'South America':
+        return -3;
+      case 'Asia':
+        return 8;
+      case 'Oceania':
+        return 10;
+      case 'Africa':
+        return 2;
+      case 'Middle East':
+        return 3;
+      default:
+        return 0;
+    }
+  }
+
+  String get localTime => fmtTime(DateTime.now().toUtc().add(Duration(hours: utcOffset)));
+  String get tzLabel => 'UTC${utcOffset >= 0 ? '+' : ''}$utcOffset';
+  String get lastActive => status == 'online' ? 'Online now' : (status == 'away' ? 'Active 20 min ago' : 'Active ${1 + _h % 20} hours ago');
+  DateTime get memberSince => DateTime(2023 + _h % 3, 1 + _h % 12, 1 + _h % 27);
+  bool get verified => _h % 3 != 1;
+  List<String> get otherPlatforms => [for (final x in kPlatforms) if (x != platform && (_h + x.length) % 4 == 0) x];
+  String get pronouns => const ['he/him', 'she/her', 'they/them', '', ''][_h % 5];
+  String get askMe => _kAsk[_h % _kAsk.length];
+  String get discord => tag.toLowerCase();
+  String? get twitch => _h % 2 == 0 ? 'twitch.tv/${tag.toLowerCase()}' : null;
+  Color get themeColor => kThemes[_h % kThemes.length];
+}
+
+bool canSeeSocial(Player p) => p._h % 4 == 0 ? S.friends.contains(p.tag) : canSee(p, 'Social links');
+
+List<Player> mutualSquad(Player p) {
+  final out = <Player>{};
+  for (final g in S.groups) {
+    if (g.memberOf(p) == null) continue;
+    for (final m in g.members) {
+      final w = m.who;
+      if (w is Player && w != p && S.friends.contains(w.tag)) out.add(w);
+    }
+  }
+  return out.toList();
+}
+
+Widget gameBanner(String game, {double h = 120, String label = 'MAIN GAME', Widget? corner}) => SizedBox(
+      height: h,
+      child: Stack(fit: StackFit.expand, children: [
+        CoverImage(game),
+        DecoratedBox(
+          decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black.withAlpha(200)])),
+        ),
+        Positioned(
+          left: 14,
+          right: 14,
+          bottom: 10,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 0.9)),
+            Text(game, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+          ]),
+        ),
+        if (corner != null) Positioned(top: 10, right: 10, child: corner),
+      ]),
+    );
+
+List<Widget> playerExtraSecs(BuildContext context, Player p) {
+  final games = canSee(p, 'Games') ? p.games : <String>[];
+  final rankedGames = [for (final g in games) if (ladderOf(g) != null) g];
+  final main = games.isEmpty ? null : games.first;
+  final picks = main == null ? <String>[] : favPicks(main, p.tag);
+  final mutual = mutualSquad(p);
+  final shared = [for (final g in S.groupsOf(p)) if (gIsMember(g)) g];
+  return [
+    Sec(
+      'Ranks',
+      !canSee(p, 'Rank')
+          ? lockedRow('Ranks are not public')
+          : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (rankedGames.isEmpty) const Text('No ranked games to show.', style: TextStyle(color: kMuted)),
+              for (final g in rankedGames)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(children: [
+                    gameThumb(g, w: 40, h: 24),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(g, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    RankBadge(g, playerRank(p, g), linked: p.verified),
+                  ]),
+                ),
+              const SizedBox(height: 6),
+              Text(p.verified ? 'Verified through a linked account (demo data).' : 'Self-reported rank.', style: const TextStyle(color: kMuted, fontSize: 12)),
+            ]),
+    ),
+    Sec(
+      'Play style & comms',
+      !canSee(p, 'Play style & comms')
+          ? lockedRow('Play style is not public')
+          : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                infoChip(p.playStyle, icon: Icons.flag_outlined),
+                infoChip('Role: ${p.role}', icon: Icons.shield_outlined),
+                infoChip('Looking for: ${p.lookingFor}', icon: Icons.search),
+                infoChip(p.hasMic ? 'Has a mic' : 'No mic', icon: p.hasMic ? Icons.mic : Icons.mic_off),
+                infoChip(p.languages.join(', '), icon: Icons.translate),
+              ]),
+              if (picks.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('Favourite picks in $main', style: const TextStyle(color: kMuted, fontSize: 12)),
+                const SizedBox(height: 6),
+                Wrap(spacing: 8, runSpacing: 8, children: [for (final x in picks) infoChip(x, icon: Icons.star_outline)]),
+              ],
+            ]),
+    ),
+    Sec(
+      'Activity & reliability',
+      !canSee(p, 'Activity & reliability')
+          ? lockedRow('Activity is not public')
+          : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(child: Text('Reliability: ${p.reliability}%', style: const TextStyle(fontWeight: FontWeight.bold))),
+                if (p.verified) const Icon(Icons.verified, size: 18, color: kAccent),
+              ]),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(value: p.reliability / 100, minHeight: 6, backgroundColor: kField, color: p.reliability >= 85 ? kOnline : Colors.amber),
+              ),
+              const SizedBox(height: 4),
+              const Text('How often they show up to sessions they agreed to.', style: TextStyle(color: kMuted, fontSize: 12)),
+              const SizedBox(height: 12),
+              detailRow(Icons.circle, p.lastActive),
+              detailRow(Icons.schedule, 'Their time: ${p.localTime} (${p.tzLabel})'),
+              detailRow(Icons.timelapse, 'Plays about ${p.weeklyHours} hours a week · ${p.avail}'),
+              detailRow(Icons.cake_outlined, 'Member since ${fmtDate(p.memberSince)}'),
+            ]),
+    ),
+    Sec(
+      'Connections',
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Also plays on', style: const TextStyle(color: kMuted, fontSize: 12)),
+        const SizedBox(height: 6),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          infoChip(p.platform, icon: Icons.sports_esports),
+          for (final x in p.otherPlatforms) infoChip(x, icon: Icons.devices_other),
+        ]),
+        const SizedBox(height: 12),
+        Text('Squad mates you both know', style: const TextStyle(color: kMuted, fontSize: 12)),
+        const SizedBox(height: 6),
+        if (mutual.isEmpty)
+          const Text('None yet.', style: TextStyle(color: kMuted))
+        else
+          Wrap(spacing: 10, runSpacing: 8, children: [
+            for (final m in mutual)
+              InkWell(
+                onTap: () => openPlayer(context, m),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [Avatar(m.avatar, radius: 12), const SizedBox(width: 6), Text(m.tag)]),
+              ),
+          ]),
+        if (shared.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text('Groups you are both in: ${shared.map((g) => g.name).join(', ')}', style: const TextStyle(color: kMuted, fontSize: 12.5)),
+        ],
+      ]),
+    ),
+    Sec(
+      'Social links',
+      !canSeeSocial(p)
+          ? lockedRow('Social links are shared with squad mates only')
+          : Wrap(spacing: 8, runSpacing: 8, children: [
+              infoChip('Discord: ${p.discord}', icon: Icons.forum_outlined),
+              if (p.twitch != null) infoChip(p.twitch!, icon: Icons.live_tv),
+            ]),
+    ),
+    Sec('Ask me about', Text('“${p.askMe}”', style: const TextStyle(fontStyle: FontStyle.italic))),
+  ];
+}
+
+/// "My ranks & roles": one tile per game on your own profile.
+class RankEditor extends StatelessWidget {
+  final Profile p;
+  final VoidCallback onChanged;
+  const RankEditor({super.key, required this.p, required this.onChanged});
+  @override
+  Widget build(BuildContext context) {
+    if (p.games.isEmpty) return const Text('Add a game under "My games" first.', style: TextStyle(color: kMuted));
+    final linked = p.linked.values.any((v) => v);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(
+        linked
+            ? 'Ranks are self-reported for now. Once game APIs are connected, ranks from your linked account will show a verified tick.'
+            : 'Choose your rank in each game. Link a gaming account to be able to verify it later.',
+        style: const TextStyle(color: kMuted, fontSize: 12.5),
+      ),
+      const SizedBox(height: 12),
+      for (final g in p.games)
+        Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: kField, borderRadius: BorderRadius.circular(12)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              gameThumb(g, w: 40, h: 24),
+              const SizedBox(width: 10),
+              Expanded(child: Text(g, style: const TextStyle(fontWeight: FontWeight.bold))),
+              if (ladderOf(g) != null) RankBadge(g, p.gameRank[g] ?? kUnranked),
+            ]),
+            const SizedBox(height: 10),
+            if (ladderOf(g) != null)
+              PickField(
+                label: 'Rank in $g',
+                value: p.gameRank[g] ?? kUnranked,
+                options: [kUnranked, ...ladderOf(g)!],
+                onChanged: (v) {
+                  p.gameRank[g] = v;
+                  onChanged();
+                },
+              )
+            else
+              const Text('This game has no ranked ladder in SquadUp.', style: TextStyle(color: kMuted, fontSize: 12.5)),
+            const SizedBox(height: 10),
+            PickField(
+              label: 'Preferred role in $g',
+              value: p.gameRole[g] ?? 'Flexible',
+              options: kRolePicks,
+              onChanged: (v) {
+                p.gameRole[g] = v;
+                onChanged();
+              },
+            ),
+            const SizedBox(height: 10),
+            outLabel(
+              'Favourite heroes, characters or loadouts',
+              TextFormField(
+                key: ValueKey('picks$g'),
+                initialValue: p.gamePicks[g] ?? '',
+                maxLength: 60,
+                onChanged: (v) => p.gamePicks[g] = v,
+              ),
+            ),
+          ]),
+        ),
+    ]);
+  }
+}
+
+/// "Play style & contact": comms, languages, links, pronouns and profile colour.
+class StyleEditor extends StatelessWidget {
+  final Profile p;
+  final VoidCallback onChanged;
+  const StyleEditor({super.key, required this.p, required this.onChanged});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        PickField(label: 'Play style', value: p.playStyle, options: kPlayStyles, onChanged: (v) {
+          p.playStyle = v;
+          onChanged();
+        }),
+        const SizedBox(height: 12),
+        PickField(label: 'Looking for', value: p.lookingFor, options: kLookingFor, onChanged: (v) {
+          p.lookingFor = v;
+          onChanged();
+        }),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('I have a mic'),
+          value: p.hasMic,
+          onChanged: (v) {
+            p.hasMic = v;
+            onChanged();
+          },
+        ),
+        outLabel('Languages (separate with commas)', TextFormField(initialValue: p.languages, onChanged: (v) => p.languages = v)),
+        const SizedBox(height: 12),
+        outLabel('Pronouns (optional)', TextFormField(initialValue: p.pronouns, maxLength: 20, onChanged: (v) => p.pronouns = v)),
+        outLabel('Ask me about…', TextFormField(initialValue: p.askMe, maxLength: 60, onChanged: (v) => p.askMe = v)),
+        const SizedBox(height: 4),
+        outLabel('Discord username', TextFormField(initialValue: p.discord, onChanged: (v) => p.discord = v)),
+        const SizedBox(height: 12),
+        outLabel('Twitch / YouTube link', TextFormField(initialValue: p.twitch, onChanged: (v) => p.twitch = v)),
+        const SizedBox(height: 14),
+        const Text('Profile colour', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 10, children: [
+          for (var i = 0; i < kThemes.length; i++)
+            GestureDetector(
+              onTap: () {
+                p.theme = i;
+                onChanged();
+              },
+              child: CircleAvatar(
+                radius: 16,
+                backgroundColor: kThemes[i],
+                child: p.theme == i ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
+              ),
+            ),
+        ]),
+        const SizedBox(height: 10),
+        const Text('Reliability builds up as you turn up to sessions. Who can see each of these is set under Privacy.', style: TextStyle(color: kMuted, fontSize: 12.5)),
+      ]);
+}
+
+// ── Notifications for everything ──
+int _demoNext = 0;
+final _unlockedAch = <String>{};
+bool _achReady = false;
+
+/// Shows a banner whenever a new achievement is unlocked (called after any profile/state update).
+void checkAchievements() {
+  final u = S.me;
+  if (u == null) return;
+  final list = achievements(u);
+  if (!_achReady) {
+    _unlockedAch
+      ..clear()
+      ..addAll([for (final a in list) if (a.$4) a.$2]);
+    _achReady = true;
+    return;
+  }
+  for (final a in list) {
+    if (a.$4 && _unlockedAch.add(a.$2)) {
+      pushNotice('Achievements & ranks', Icons.emoji_events, 'Achievement unlocked', '${a.$2}: ${a.$3}', color: Colors.amber, tab: 2);
+    }
+  }
+}
+
+extension MoreNoticeDemos on AppState {
+  void simulateCommend() {
+    final u = me;
+    if (u == null) return;
+    final p = kPlayers.firstWhere((x) => !blocked.contains(x.tag), orElse: () => kPlayers.first);
+    pushNotice('Commendations', Icons.thumb_up_alt, 'New commendation', '${p.tag} commended you: ${kCommends[p.tag.length % kCommends.length]}', color: Colors.pinkAccent, tab: 2);
+  }
+
+  void simulateRankUp() {
+    final u = me;
+    if (u == null) return;
+    for (final g in u.games) {
+      final l = ladderOf(g);
+      if (l == null) continue;
+      final i = l.indexOf(u.gameRank[g] ?? kUnranked);
+      if (i + 1 >= l.length) continue;
+      u.gameRank[g] = l[i + 1];
+      touch();
+      pushNotice('Achievements & ranks', Icons.military_tech, 'Rank up!', 'You reached ${l[i + 1]} in $g.', color: rankColor(g, l[i + 1]), tab: 2);
+      return;
+    }
+    pushNotice('Achievements & ranks', Icons.military_tech, 'Rank updates', 'Add a ranked game and set your rank to see rank-up alerts.', tab: 2);
+  }
+
+  void simulateEventReminder() {
+    final now = DateTime.now();
+    final up = events.where((e) => e.when.isAfter(now)).toList()..sort((a, b) => a.when.compareTo(b.when));
+    if (up.isEmpty) return;
+    final e = up.first;
+    pushNotice('Event reminders', Icons.event, 'Event reminder', '${e.title} · ${e.game} · ${fmtWhen(e.when)}', color: Colors.orangeAccent, tab: 2);
+  }
+
+  void simulateJoinApproved() {
+    final u = me;
+    if (u == null) return;
+    for (final g in groups) {
+      if (g.requests.any((r) => identical(r, u))) {
+        approve(g, u, true);
+        pushNotice('Group activity', Icons.group_add, 'Join request approved', 'You are now a member of ${g.name}.', color: kOnline, tab: 4);
+        return;
+      }
+    }
+  }
+
+  void simulateLfgReply() {
+    final u = me;
+    if (u == null) return;
+    for (final l in lfg) {
+      if (identical(l.who, u)) {
+        final p = kPlayers.firstWhere((x) => x.games.contains(l.game), orElse: () => kPlayers.first);
+        pushNotice('LFG & matches', Icons.sports_esports, '${p.tag} replied to your post', 'Interested in your ${l.game} session.', color: Colors.tealAccent, tab: 2);
+        return;
+      }
+    }
+    final p = kPlayers.first;
+    pushNotice('LFG & matches', Icons.sports_esports, 'New match for you', '${p.tag} is a ${matchScore(u, p)}% match and is online now.', color: Colors.tealAccent, tab: 1);
+  }
+
+  /// "Send a test notification": each tap shows the next type of notification.
+  void demoNext() {
+    switch (_demoNext++ % 9) {
+      case 0:
+        pushNotice('Messages', Icons.chat_bubble, 'NovaStrike', 'Yo, are you around tonight? 🎮', tab: 3);
+      case 1:
+        simulateFriendRequest();
+      case 2:
+        simulateGroupRequest();
+      case 3:
+        simulateCommend();
+      case 4:
+        simulateRankUp();
+      case 5:
+        simulateEventReminder();
+      case 6:
+        simulateLfgReply();
+      case 7:
+        pushNotice('Safety & support', Icons.support_agent, 'Report received', 'Thanks, our team is reviewing it.', color: Colors.lightGreenAccent, tab: 6);
+      default:
+        simulateNews();
+    }
+  }
+}
+
+void resetAchievementWatch() {
+  _achReady = false;
+  _unlockedAch.clear();
+}
+
 // ───────────────────────── Home shell ─────────────────────────
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -4609,7 +5197,11 @@ class _HomeShellState extends State<HomeShell> {
     _extra
       ..add(Timer(const Duration(seconds: 50), S.simulateFriendRequest))
       ..add(Timer(const Duration(seconds: 75), S.simulateGroupRequest))
-      ..add(Timer(const Duration(seconds: 100), S.simulateNews));
+      ..add(Timer(const Duration(seconds: 100), S.simulateNews))
+      ..add(Timer(const Duration(seconds: 125), S.simulateCommend))
+      ..add(Timer(const Duration(seconds: 150), S.simulateEventReminder))
+      ..add(Timer(const Duration(seconds: 175), S.simulateJoinApproved))
+      ..add(Timer(const Duration(seconds: 200), S.simulateRankUp));
   }
 
   @override
@@ -4923,6 +5515,8 @@ class ProfileTab extends StatelessWidget {
                     ]),
                   ),
                 Sec('My games', GamesEditor(p: p, onChanged: S.update)),
+                Sec('My ranks & roles', RankEditor(p: p, onChanged: S.update)),
+                Sec('Play style & contact', StyleEditor(p: p, onChanged: S.update)),
                 Sec(
                   'My groups',
                   Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -5101,7 +5695,7 @@ class FindTab extends StatefulWidget {
 }
 
 class _FindTabState extends State<FindTab> {
-  String fGame = 'Any', fPlat = 'Any', fRank = 'Any', fAvail = 'Any', fRegion = 'Any';
+  String fGame = 'Any', fPlat = 'Any', fRank = 'Any', fAvail = 'Any', fRegion = 'Any', fMinRank = 'Any';
   RangeValues fAge = const RangeValues(13, 60);
   final q = TextEditingController();
 
@@ -5116,6 +5710,7 @@ class _FindTabState extends State<FindTab> {
             (fGame == 'Any' || p.games.contains(fGame)) &&
             (fPlat == 'Any' || p.platform == fPlat) &&
             (fRank == 'Any' || p.rank == fRank) &&
+            (fMinRank == 'Any' || fGame == 'Any' || rankIndex(fGame, playerRank(p, fGame)) >= rankIndex(fGame, fMinRank)) &&
             (fAvail == 'Any' || p.avail == fAvail) &&
             (fRegion == 'Any' || p.region == fRegion) &&
             p.age >= fAge.start.round() &&
@@ -5161,9 +5756,13 @@ class _FindTabState extends State<FindTab> {
                         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                         children: [
                           Wrap(spacing: 12, runSpacing: 12, children: [
-                            filter('Game', fGame, games, (x) => fGame = x),
+                            filter('Game', fGame, games, (x) {
+                              fGame = x;
+                              fMinRank = 'Any';
+                            }),
                             filter('Platform', fPlat, kPlatforms, (x) => fPlat = x),
                             filter('Rank / skill', fRank, kRanks, (x) => fRank = x),
+                            if (fGame != 'Any' && ladderOf(fGame) != null) filter('Min. rank in $fGame', fMinRank, ladderOf(fGame)!, (x) => fMinRank = x),
                             filter('Availability', fAvail, kAvail, (x) => fAvail = x),
                             filter('Region', fRegion, kRegions, (x) => fRegion = x),
                           ]),
@@ -5174,7 +5773,7 @@ class _FindTabState extends State<FindTab> {
                             alignment: Alignment.centerRight,
                             child: TextButton.icon(
                               onPressed: () => setState(() {
-                                fGame = fPlat = fRank = fAvail = fRegion = 'Any';
+                                fGame = fPlat = fRank = fAvail = fRegion = fMinRank = 'Any';
                                 fAge = const RangeValues(13, 60);
                                 q.clear();
                               }),
@@ -5291,77 +5890,88 @@ class PlayerCard extends StatelessWidget {
     final friend = S.friends.contains(p.tag);
     final showTag = canSee(p, 'Gamertag');
     final showGames = canSee(p, 'Games') && p.games.isNotEmpty;
+    final main = showGames ? p.games.first : null;
+    final showStyle = canSee(p, 'Play style & comms');
+    final showAct = canSee(p, 'Activity & reliability');
+    final rank = main == null || !canSee(p, 'Rank') ? null : playerRank(p, main);
     final details = [
       if (showTag && p.real.isNotEmpty) p.real,
       if (canSee(p, 'Age / DOB')) '${p.age} yrs',
       p.region,
     ].join(' · ');
     final status = p.status[0].toUpperCase() + p.status.substring(1);
+    final pill = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: Colors.black.withAlpha(150), borderRadius: BorderRadius.circular(10)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.circle, size: 8, color: statusColor(p.status)),
+        const SizedBox(width: 4),
+        Text(status, style: const TextStyle(fontSize: 11, color: Colors.white)),
+      ]),
+    );
     return Pressable(child: Material(
       color: Theme.of(context).cardColor,
+      clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: kBorder)),
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
         onTap: () => openPlayer(context, p),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Avatar(p.avatar),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(showTag ? p.tag : 'Anonymous player', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 2),
-                  Text(details, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 12.5)),
-                  const SizedBox(height: 8),
-                  // Main / top game: cover image + name, directly under the player's name
-                  if (showGames)
-                    Row(children: [
-                      gameThumb(p.games.first, w: 54, h: 32),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          const Text('MAIN GAME', style: TextStyle(color: kMuted, fontSize: 9.5, letterSpacing: 0.8)),
-                          Text(p.games.first, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kAccent, fontSize: 13, fontWeight: FontWeight.w600)),
-                        ]),
-                      ),
-                    ])
-                  else
-                    lockedRow('Games hidden'),
-                ]),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(color: statusColor(p.status).withAlpha(40), borderRadius: BorderRadius.circular(10)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.circle, size: 8, color: statusColor(p.status)),
-                  const SizedBox(width: 4),
-                  Text(status, style: const TextStyle(fontSize: 11)),
-                ]),
-              ),
-            ]),
-            const SizedBox(height: 12),
-            MatchBar(score),
-            const SizedBox(height: 10),
-            Wrap(spacing: 6, runSpacing: 6, children: [
-              chip(p.platform, Icons.sports_esports),
-              chip(p.rank, Icons.military_tech),
-              chip(p.avail, Icons.schedule),
-            ]),
-            const SizedBox(height: 10),
-            Text(canSee(p, 'Bio') ? p.bio : 'Bio is private', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 12.5)),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.end, children: [
-                MiniButton(label: friend ? 'In squad' : (inv ? 'Requested' : 'Send Request'), icon: friend ? Icons.check : (inv ? Icons.hourglass_top : Icons.person_add_alt_1), filled: false, onTap: friend || inv ? null : () => S.invite(p)),
-                MiniButton(label: 'Message', icon: Icons.chat_bubble_outline, onTap: () => openChat(context, S.startChat(p))),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Top half: the main game's banner
+          if (main != null)
+            gameBanner(main, h: 120, corner: pill)
+          else
+            SizedBox(
+              height: 120,
+              child: Stack(fit: StackFit.expand, children: [
+                Container(decoration: coverDeco(p.tag, r: 0), child: const Center(child: Icon(Icons.lock_outline, color: Colors.white54, size: 30))),
+                Positioned(left: 14, bottom: 10, child: const Text('Games hidden', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600))),
+                Positioned(top: 10, right: 10, child: pill),
               ]),
             ),
-          ]),
-        ),
+          Container(height: 3, color: p.themeColor),
+          // Bottom half: the player's details
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                Avatar(p.avatar),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(showTag ? p.tag : 'Anonymous player', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 2),
+                    Text(details, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 12.5)),
+                  ]),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              MatchBar(score),
+              const SizedBox(height: 10),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                chip(p.platform, Icons.sports_esports),
+                if (rank != null) RankBadge(main!, rank, linked: p.verified) else chip(p.rank, Icons.military_tech),
+                chip(p.avail, Icons.schedule),
+                if (showStyle) chip(p.playStyle, Icons.flag_outlined),
+                if (showStyle) chip(p.role, Icons.shield_outlined),
+                if (showStyle) chip(p.hasMic ? 'Mic' : 'No mic', p.hasMic ? Icons.mic : Icons.mic_off),
+              ]),
+              if (showAct) ...[
+                const SizedBox(height: 8),
+                Text('${p.lastActive} · their time ${p.localTime} · ${p.reliability}% reliable', style: const TextStyle(color: kMuted, fontSize: 12)),
+              ],
+              const SizedBox(height: 10),
+              Text(canSee(p, 'Bio') ? p.bio : 'Bio is private', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kMuted, fontSize: 12.5)),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.end, children: [
+                  MiniButton(label: friend ? 'In squad' : (inv ? 'Requested' : 'Send Request'), icon: friend ? Icons.check : (inv ? Icons.hourglass_top : Icons.person_add_alt_1), filled: false, onTap: friend || inv ? null : () => S.invite(p)),
+                  MiniButton(label: 'Message', icon: Icons.chat_bubble_outline, onTap: () => openChat(context, S.startChat(p))),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
       ),
     ));
   }
@@ -5789,6 +6399,14 @@ class PlayerProfileScreen extends StatelessWidget {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 700),
                 child: ListView(padding: const EdgeInsets.all(16), children: [
+                  if (canSee(p, 'Games') && p.games.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Column(children: [gameBanner(p.games.first, h: 150), Container(height: 4, color: p.themeColor)]),
+                      ),
+                    ),
                   Sec(
                     canSee(p, 'Gamertag') ? (p.real.isEmpty ? p.tag : p.real) : 'Anonymous player',
                     Column(children: [
@@ -5800,7 +6418,7 @@ class PlayerProfileScreen extends StatelessWidget {
                             Text(canSee(p, 'Gamertag') ? '@${p.tag}' : 'Gamertag hidden', style: const TextStyle(color: kAccent, fontSize: 16)),
                             Text(p.status, style: TextStyle(color: statusColor(p.status), fontSize: 13)),
                             const SizedBox(height: 6),
-                            Text(showAge ? '${p.age} yrs · ${p.region} · ${p.gender}' : 'Age, region and gender are not public', style: const TextStyle(color: kMuted)),
+                            Text(showAge ? '${p.age} yrs · ${p.region} · ${p.gender}${p.pronouns.isEmpty ? '' : ' · ${p.pronouns}'}' : 'Age, region and gender are not public', style: const TextStyle(color: kMuted)),
                           ]),
                         ),
                       ]),
@@ -5843,6 +6461,7 @@ class PlayerProfileScreen extends StatelessWidget {
                           ])
                         : locked('Games are not public'),
                   ),
+                  ...playerExtraSecs(context, p),
                   playerStatsSec(p),
                   commendSec(p),
                   if (!canSee(p, 'Groups'))
